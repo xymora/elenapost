@@ -1,18 +1,24 @@
 # app/streamlit_app.py
+# Requisitos en requirements.txt:
+# streamlit
+# firebase-admin
+# google-cloud-storage
+# pandas
+
 import os
 import io
 import json
 import time
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any, List
 
 import streamlit as st
 
 # --------- Firebase Admin (Firestore + Storage) ----------
-# Requiere: firebase-admin (en requirements.txt)
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
+from google.cloud.storage.bucket import Bucket  # <- tipo correcto para el bucket
 
 APP_TITLE = "Elenapost"
 BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"   # puedes setearlo en secrets o env
@@ -39,7 +45,7 @@ def _load_firebase_credentials_from_file() -> Optional[dict]:
 
 
 @st.cache_resource(show_spinner=False)
-def init_firebase() -> Tuple[firestore.Client, storage.bucket.Bucket]:
+def init_firebase() -> Tuple[firestore.Client, Bucket]:
     """
     Inicializa Firebase Admin:
     1) Primero busca credenciales en st.secrets['firebase_service_account'].
@@ -62,7 +68,8 @@ def init_firebase() -> Tuple[firestore.Client, storage.bucket.Bucket]:
     # Determinar el bucket de Storage
     bucket_name = None
     # 1) secrets/env explícito
-    bucket_name = st.secrets.get(BUCKET_ENV_KEY) if hasattr(st, "secrets") else None
+    if hasattr(st, "secrets"):
+        bucket_name = st.secrets.get(BUCKET_ENV_KEY)
     if not bucket_name:
         bucket_name = os.getenv(BUCKET_ENV_KEY)
     # 2) inferir de project_id si no lo definiste
@@ -94,8 +101,8 @@ def hash_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:16]
 
 
-def upload_image(bucket, file_bytes: bytes, filename_hint: str) -> str:
-    """Sube imagen a Storage y retorna URL pública firmada por tiempo largo."""
+def upload_image(bucket: Bucket, file_bytes: bytes, filename_hint: str) -> str:
+    """Sube imagen a Storage y retorna URL pública (o firmada como fallback)."""
     ext = os.path.splitext(filename_hint)[1].lower() or ".bin"
     obj_name = f"images/{int(time.time())}_{hash_bytes(file_bytes)}{ext}"
     blob = bucket.blob(obj_name)
@@ -105,8 +112,8 @@ def upload_image(bucket, file_bytes: bytes, filename_hint: str) -> str:
         blob.make_public()
         return blob.public_url
     except Exception:
-        # como fallback, URL firmada (1 año ~ 31536000 s)
-        return blob.generate_signed_url(expiration=31536000)
+        # Fallback: URL firmada por 365 días
+        return blob.generate_signed_url(expiration=timedelta(days=365))
 
 
 def _guess_mime(ext: str) -> str:
@@ -125,6 +132,14 @@ def to_csv(rows: List[Dict[str, Any]]) -> bytes:
         return b""
     df = pd.DataFrame(rows)
     return df.to_csv(index=False).encode("utf-8")
+
+
+def _rerun():
+    """Compatibilidad entre versiones de Streamlit."""
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 
 # ====================== UI ======================
@@ -151,14 +166,24 @@ with colL:
     doc_to_edit_id = None
     if edit_mode:
         # cargar ids para seleccionar
-        docs = db.collection(collection_name).order_by("created_at", direction=firestore.Query.DESCENDING).limit(50).stream()
+        docs = (
+            db.collection(collection_name)
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(50)
+            .stream()
+        )
         options = []
         for d in docs:
-            data = d.to_dict()
+            data = d.to_dict() or {}
             title = data.get("title", "(sin título)")
             options.append((f"{title} — {d.id}", d.id, data))
         if options:
-            label, doc_to_edit_id, data_sel = st.selectbox("Selecciona post", options=options, format_func=lambda x: x[0] if isinstance(x, tuple) else x, index=0)
+            label, doc_to_edit_id, data_sel = st.selectbox(
+                "Selecciona post",
+                options=options,
+                format_func=lambda x: x[0] if isinstance(x, tuple) else x,
+                index=0
+            )
         else:
             st.info("No hay posts recientes para editar.")
 
@@ -167,7 +192,7 @@ with colL:
     if doc_to_edit_id:
         doc = db.collection(collection_name).document(doc_to_edit_id).get()
         if doc.exists:
-            d = doc.to_dict()
+            d = doc.to_dict() or {}
             default_title = d.get("title", "")
             default_body = d.get("body", "")
             default_tags = ",".join(d.get("tags", []))
@@ -188,7 +213,7 @@ with colL:
         if not title.strip():
             st.error("El título es obligatorio.")
         else:
-            doc_id = doc_to_edit_id or slugify(title) + "-" + datetime.now().strftime("%Y%m%d%H%M%S")
+            doc_id = doc_to_edit_id or (slugify(title) + "-" + datetime.now().strftime("%Y%m%d%H%M%S"))
             ref = db.collection(collection_name).document(doc_id)
 
             final_image_url = image_url_manual.strip()
@@ -208,12 +233,12 @@ with colL:
 
             ref.set(payload, merge=True)
             st.success(f"Post {'actualizado' if doc_to_edit_id else 'creado'}: {doc_id}")
-            st.experimental_rerun()
+            _rerun()
 
     if delete_clicked and doc_to_edit_id:
         db.collection(collection_name).document(doc_to_edit_id).delete()
         st.warning(f"Post eliminado: {doc_to_edit_id}")
-        st.experimental_rerun()
+        _rerun()
 
 # -------- Listado / Búsqueda --------
 with colR:
@@ -223,13 +248,15 @@ with colR:
     limit = st.slider("Límite", 5, 100, 20, 5)
 
     # Consulta básica y filtrado en cliente (para demo)
-    q = db.collection(collection_name).order_by("created_at", direction=firestore.Query.DESCENDING).limit(250)
+    q = (
+        db.collection(collection_name)
+        .order_by("created_at", direction=firestore.Query.DESCENDING)
+        .limit(250)
+    )
     docs = [d for d in q.stream()]
     rows = []
     for d in docs:
-        data = d.to_dict()
-        if not data:
-            continue
+        data = d.to_dict() or {}
         title = data.get("title", "")
         tags = data.get("tags", [])
         if q_text:
@@ -239,6 +266,10 @@ with colR:
         if tag_filter and tag_filter not in tags:
             continue
 
+        body_preview = data.get("body", "")
+        if len(body_preview) > 120:
+            body_preview = body_preview[:120] + "…"
+
         rows.append({
             "id": d.id,
             "title": title,
@@ -246,7 +277,7 @@ with colR:
             "created_at": data.get("created_at", ""),
             "updated_at": data.get("updated_at", ""),
             "image_url": data.get("image_url", ""),
-            "body": (data.get("body", "")[:120] + "…") if len(data.get("body", "")) > 120 else data.get("body", "")
+            "body": body_preview
         })
 
     # Mostrar tarjetas
@@ -266,7 +297,7 @@ with colR:
                         st.image(row["image_url"], use_container_width=True)
                     if st.button("Editar", key=f"edit_{row['id']}"):
                         st.session_state["_force_edit_id"] = row["id"]
-                        st.experimental_rerun()
+                        _rerun()
 
         # Export CSV
         st.download_button(
@@ -280,7 +311,5 @@ with colR:
 # Forzar edición (si se pulsó botón en tarjeta)
 if "_force_edit_id" in st.session_state:
     st.toast("Cargando post para edición…", icon="✍️")
-    # Reinicia con el checkbox en True y seleccionado ese ID
-    # (Técnicamente necesitaríamos un estado más complejo; para esta demo basta relanzar)
     del st.session_state["_force_edit_id"]
-    st.experimental_rerun()
+    _rerun()
