@@ -1,10 +1,4 @@
 # app/streamlit_app.py
-# Requisitos en requirements.txt:
-# streamlit
-# firebase-admin
-# google-cloud-storage
-# pandas
-
 import os
 import json
 import time
@@ -14,15 +8,15 @@ from typing import Optional, Tuple, Dict, Any, List
 
 import streamlit as st
 
-# --------- Firebase Admin (Firestore + Storage) ----------
+# Firebase Admin (Firestore + Storage)
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
-from google.cloud.storage.bucket import Bucket  # tipo correcto para bucket
+from google.cloud.storage.bucket import Bucket  # tipo correcto
 
 APP_TITLE = "Elenapost"
 BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"
 DEFAULT_POSTS_COLLECTION = "posts"
-DEFAULT_LEADS_COLLECTION = "leads"   # <<< colección para los registros manuales
+DEFAULT_LEADS_COLLECTION = "leads"
 
 
 # ====================== Helpers ======================
@@ -56,7 +50,6 @@ def init_firebase() -> Tuple[firestore.Client, Bucket]:
         )
         st.stop()
 
-    # Determinar el bucket de Storage
     bucket_name = None
     if hasattr(st, "secrets"):
         bucket_name = st.secrets.get(BUCKET_ENV_KEY)
@@ -90,6 +83,16 @@ def hash_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:16]
 
 
+def _guess_mime(ext: str) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(ext, "application/octet-stream")
+
+
 def upload_image(bucket: Bucket, file_bytes: bytes, filename_hint: str) -> str:
     ext = os.path.splitext(filename_hint)[1].lower() or ".bin"
     obj_name = f"images/{int(time.time())}_{hash_bytes(file_bytes)}{ext}"
@@ -100,16 +103,6 @@ def upload_image(bucket: Bucket, file_bytes: bytes, filename_hint: str) -> str:
         return blob.public_url
     except Exception:
         return blob.generate_signed_url(expiration=timedelta(days=365))
-
-
-def _guess_mime(ext: str) -> str:
-    return {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-    }.get(ext, "application/octet-stream")
 
 
 def to_csv(rows: List[Dict[str, Any]]) -> bytes:
@@ -128,15 +121,13 @@ def _rerun():
 
 
 # ---- Helpers específicos para Leads ----
-
 def norm_si_no(val: str) -> Optional[bool]:
-    """Convierte 'SI'/'NO' o vacío a bool/None."""
     if val is None:
         return None
     v = str(val).strip().lower()
-    if v in ("si", "sí", "1", "true", "verdadero"):
+    if v in ("si", "sí", "1", "true", "verdadero", "y", "yes"):
         return True
-    if v in ("no", "0", "false", "falso"):
+    if v in ("no", "0", "false", "falso", "n"):
         return False
     return None
 
@@ -160,31 +151,29 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     st.caption("Credenciales desde `st.secrets['firebase_service_account']` o `secrets/firebase_service_account.json`.")
     st.markdown("---")
-    st.write("Colección para **posts**:")
-    posts_collection = st.text_input("Nombre colección posts", value=DEFAULT_POSTS_COLLECTION)
-    st.write("Colección para **leads**:")
-    leads_collection = st.text_input("Nombre colección leads", value=DEFAULT_LEADS_COLLECTION)
+    posts_collection = st.text_input("Colección de posts", value=DEFAULT_POSTS_COLLECTION)
+    leads_collection = st.text_input("Colección de leads", value=DEFAULT_LEADS_COLLECTION)
 
 db, bucket = init_firebase()
 
 # ------------------ Pestañas ------------------
 tab_posts, tab_leads = st.tabs(["📚 Posts", "📇 Registro manual (Leads)"])
 
-# ======================= TAB POSTS (igual que antes) =======================
+# ======================= TAB POSTS =======================
 with tab_posts:
     colL, colR = st.columns([1, 1])
 
+    # ---- Crear/Editar Post ----
     with colL:
         st.subheader("✍️ Crear / Editar post")
-
         edit_mode = st.checkbox("Editar un post existente", key="edit_post_mode")
         post_to_edit_id = None
+
         if edit_mode:
             docs = (
                 db.collection(posts_collection)
                 .order_by("created_at", direction=firestore.Query.DESCENDING)
-                .limit(50)
-                .stream()
+                .limit(50).stream()
             )
             options = []
             for d in docs:
@@ -192,12 +181,11 @@ with tab_posts:
                 title = data.get("title", "(sin título)")
                 options.append((f"{title} — {d.id}", d.id, data))
             if options:
-                label, post_to_edit_id, data_sel = st.selectbox(
+                label, post_to_edit_id, _ = st.selectbox(
                     "Selecciona post",
                     options=options,
                     format_func=lambda x: x[0] if isinstance(x, tuple) else x,
-                    index=0,
-                    key="post_select"
+                    index=0, key="post_select"
                 )
             else:
                 st.info("No hay posts recientes para editar.")
@@ -213,15 +201,15 @@ with tab_posts:
                 default_image = d.get("image_url", "")
 
         with st.form("post_form", clear_on_submit=not edit_mode):
-            title = st.text_input("Título", value=default_title, placeholder="Ej. Lanzamiento Q4")
+            title = st.text_input("Título", value=default_title)
             body = st.text_area("Contenido", value=default_body, height=220)
-            tags_text = st.text_input("Etiquetas (separadas por coma)", value=default_tags, placeholder="news, product, release")
+            tags_text = st.text_input("Etiquetas (coma)", value=default_tags)
             image_file = st.file_uploader("Imagen (opcional)", type=["png", "jpg", "jpeg", "gif", "webp"], key="post_image")
             image_url_manual = st.text_input("o URL de imagen (opcional)", value=default_image, key="post_image_url")
 
-            submit_col1, submit_col2 = st.columns([1, 1])
-            submitted = submit_col1.form_submit_button("Guardar")
-            delete_clicked = submit_col2.form_submit_button("Eliminar", disabled=not bool(post_to_edit_id))
+            c1, c2 = st.columns([1, 1])
+            submitted = c1.form_submit_button("Guardar")
+            delete_clicked = c2.form_submit_button("Eliminar", disabled=not bool(post_to_edit_id))
 
         if submitted:
             if not title.strip():
@@ -254,10 +242,11 @@ with tab_posts:
             st.warning(f"Post eliminado: {post_to_edit_id}")
             _rerun()
 
+    # ---- Listado Posts ----
     with colR:
         st.subheader("📚 Posts")
         q_text = st.text_input("Buscar por título o etiqueta", key="post_search")
-        tag_filter = st.text_input("Filtrar por etiqueta exacta (opcional)", key="post_tag_filter")
+        tag_filter = st.text_input("Filtrar por etiqueta exacta", key="post_tag_filter")
         limit = st.slider("Límite", 5, 100, 20, 5, key="post_limit")
 
         q = (
@@ -323,13 +312,13 @@ with tab_posts:
         del st.session_state["_force_edit_post_id"]
         _rerun()
 
-# ======================= TAB LEADS (nuevo) =======================
+# ======================= TAB LEADS =======================
 with tab_leads:
     st.subheader("🧾 Captura manual de contactos (leads)")
 
     lead_colL, lead_colR = st.columns([1, 1])
 
-    # ---------- Columna Izquierda: Formulario alta/edición ----------
+    # ---------- Formulario alta/edición ----------
     with lead_colL:
         st.markdown("### ✍️ Alta / Edición")
 
@@ -341,8 +330,7 @@ with tab_leads:
             docs = (
                 db.collection(leads_collection)
                 .order_by("created_at", direction=firestore.Query.DESCENDING)
-                .limit(100)
-                .stream()
+                .limit(100).stream()
             )
             options = []
             for d in docs:
@@ -355,18 +343,17 @@ with tab_leads:
                     "Selecciona lead",
                     options=options,
                     format_func=lambda x: x[0] if isinstance(x, tuple) else x,
-                    index=0,
-                    key="lead_select"
+                    index=0, key="lead_select"
                 )
             else:
                 st.info("No hay leads recientes para editar.")
 
-        # Valores por defecto
         def_val = lambda k, default="": existing_data.get(k, default) if existing_data else default
         def_bool = lambda k: existing_data.get(k, None) if existing_data else None
 
         with st.form("lead_form", clear_on_submit=not edit_lead_mode):
-            maquina = st.number_input("MAQUINA", min_value=0, step=1, value=int(def_val("maquina", 1)) if str(def_val("maquina", "")).isdigit() else 1)
+            maquina = st.number_input("MAQUINA", min_value=0, step=1,
+                                      value=int(def_val("maquina", 1)) if str(def_val("maquina", "")).isdigit() else 1)
             fecha_val = def_val("fecha") or ""
             try:
                 fecha_default = datetime.fromisoformat(fecha_val).date() if fecha_val else date.today()
@@ -379,12 +366,14 @@ with tab_leads:
             telefono = st.text_input("TELEFONO", value=def_val("telefono", ""))
             folio = st.text_input("FOLIO", value=str(def_val("folio", "")))
 
-            contactado_opt = st.selectbox("CONTACTADO", options=["", "SI", "NO"], index=["","SI","NO"].index(as_si_no(def_bool("contactado"))))
-            posible_opt    = st.selectbox("POSIBLE",    options=["", "SI", "NO"], index=["","SI","NO"].index(as_si_no(def_bool("posible"))))
+            contactado_opt = st.selectbox("CONTACTADO", options=["", "SI", "NO"],
+                                          index=["","SI","NO"].index(as_si_no(def_bool("contactado"))))
+            posible_opt    = st.selectbox("POSIBLE", options=["", "SI", "NO"],
+                                          index=["","SI","NO"].index(as_si_no(def_bool("posible"))))
 
-            col_submit1, col_submit2 = st.columns([1,1])
-            save_lead = col_submit1.form_submit_button("Guardar lead")
-            delete_lead = col_submit2.form_submit_button("Eliminar lead", disabled=not bool(lead_to_edit_id))
+            c1, c2 = st.columns([1,1])
+            save_lead = c1.form_submit_button("Guardar lead")
+            delete_lead = c2.form_submit_button("Eliminar lead", disabled=not bool(lead_to_edit_id))
 
         if save_lead:
             if not nombre.strip():
@@ -415,14 +404,14 @@ with tab_leads:
             st.warning(f"Lead eliminado: {lead_to_edit_id}")
             _rerun()
 
-    # ---------- Columna Derecha: Listado / Búsqueda / Export ----------
+    # ---------- Listado / Filtros / Export ----------
     with lead_colR:
         st.markdown("### 📋 Listado y filtros")
 
         q_nombre = st.text_input("Buscar por NOMBRE", key="lead_q_nombre")
         q_folio  = st.text_input("Buscar por FOLIO", key="lead_q_folio")
         q_contactado = st.selectbox("Filtrar CONTACTADO", options=["(todos)", "SI", "NO", "(vacío)"], key="lead_q_contactado")
-        q_posible    = st.selectbox("Filtrar POSIBLE",    options=["(todos)", "SI", "NO", "(vacío)"], key="lead_q_posible")
+        q_posible    = st.selectbox("Filtrar POSIBLE", options=["(todos)", "SI", "NO", "(vacío)"], key="lead_q_posible")
         limit_leads  = st.slider("Límite", 5, 200, 50, 5, key="lead_limit")
 
         q = (
@@ -434,7 +423,7 @@ with tab_leads:
         rows = []
         for d in docs:
             data = d.to_dict() or {}
-            # Filtros
+
             if q_nombre and q_nombre.lower() not in (data.get("nombre","").lower()):
                 continue
             if q_folio and q_folio.lower() not in str(data.get("folio","")).lower():
@@ -503,3 +492,111 @@ with tab_leads:
         st.toast("Cargando lead para edición…", icon="✍️")
         del st.session_state["_force_edit_lead_id"]
         _rerun()
+
+    # ---------- Importación masiva (pegar o CSV) ----------
+    st.markdown("---")
+    with st.expander("📥 Importación masiva (pegar tabla o subir CSV)", expanded=False):
+        st.write(
+            "Pega las filas con encabezados o sube un CSV. Columnas esperadas: "
+            "`MAQUINA, FECHA, NOMBRE, CORREO, TELEFONO, FOLIO, CONTACTADO, POSIBLE`."
+        )
+        raw_text = st.text_area(
+            "Pega aquí tus filas (con encabezados)",
+            height=180,
+            placeholder=(
+                "MAQUINA\tFECHA\tNOMBRE\tCORREO\tTELEFONO\tFOLIO\tCONTACTADO\tPOSIBLE\n"
+                "1\t\tmarco reyes\talomarcosss@hotmail.com\t4622100885\t2483\tSI\t\n"
+                "1\t\tandrea bernal\tandybg.1406@gmail.com\t4431691117\t41\tSI\tSI\n"
+                "1\t\tKevin Christofer Navejas Rodriguez\t\t33 4855 9221\t2981\tSI\t\n"
+                "1\t\tAlan Sanchez\tsan3alan@gmail.com\t8148059342\t6826\tSI\t\n"
+                "1\t\tVictor Miramontes\tvimin12.vm@gmail.com\t3333222489\t10937\tSI\tSI\n"
+                "1\t\tsalvador cano arredondo\thectorsalvador19@hotmail.com\t6671014514\t23870\tSI\t\n"
+                "1\t\tRafael López\trafaelopez.arteche@gmail.com\t3343309233\t371\tSI\t\n"
+                "1\t\tCarmen Ochoa\tCarmenOchoa19091997@hotmail.com\t6941081247\t9619\tSI\t\n"
+                "1\t\tGuadalupe de Jesús Bojorquez armenta\tjebza2794@gmail.com\t6682663876\t33221\tSI\t\n"
+            ),
+        )
+        csv_file = st.file_uploader("O sube CSV", type=["csv"])
+
+        def _load_dataframe():
+            import pandas as pd
+            from io import StringIO
+            if csv_file is not None:
+                return pd.read_csv(csv_file)
+            if raw_text.strip():
+                try:
+                    return pd.read_csv(StringIO(raw_text), sep=None, engine="python")
+                except Exception:
+                    return pd.read_csv(StringIO(raw_text), sep=r"\s{2,}|\t|,", engine="python")
+            return None
+
+        if st.button("📄 Previsualizar"):
+            import pandas as pd
+            df = _load_dataframe()
+            if df is None or df.empty:
+                st.error("No se pudo leer ninguna fila. Verifica que pegaste la tabla con encabezados.")
+            else:
+                df.rename(columns={c: c.strip().upper() for c in df.columns}, inplace=True)
+                required = ["MAQUINA","FECHA","NOMBRE","CORREO","TELEFONO","FOLIO","CONTACTADO","POSIBLE"]
+                for r in required:
+                    if r not in df.columns:
+                        df[r] = ""
+
+                def _norm_bool(x):
+                    x = str(x).strip().lower()
+                    if x in ("si","sí","true","1","y","yes"): return "SI"
+                    if x in ("no","false","0","n"): return "NO"
+                    return ""
+                def _norm_phone(x):
+                    return "".join(ch for ch in str(x) if ch.isdigit() or ch=="+")
+                def _norm_date(x):
+                    x = str(x).strip()
+                    if not x or x.lower() in ("nan","none"):
+                        d = date.today()
+                        return d.isoformat()
+                    try:
+                        return pd.to_datetime(x, dayfirst=True, errors="coerce").date().isoformat()
+                    except Exception:
+                        return x
+
+                df["CONTACTADO"] = df["CONTACTADO"].apply(_norm_bool)
+                df["POSIBLE"]    = df["POSIBLE"].apply(_norm_bool)
+                df["TELEFONO"]   = df["TELEFONO"].apply(_norm_phone)
+                df["FECHA"]      = df["FECHA"].apply(_norm_date)
+
+                st.write("**Previsualización (primeras 20 filas):**")
+                st.dataframe(df.head(20))
+                st.session_state["_import_df_cache"] = df
+
+        if "_import_df_cache" in st.session_state:
+            if st.button("✅ Importar a Firestore (leads)"):
+                df = st.session_state["_import_df_cache"]
+                ok, fail = 0, 0
+                for _, row in df.iterrows():
+                    try:
+                        fecha_iso = str(row["FECHA"])
+                        if len(fecha_iso) == 10:
+                            yyyy, mm, dd = fecha_iso.split("-")
+                            fecha_iso = datetime(int(yyyy), int(mm), int(dd), tzinfo=timezone.utc).isoformat()
+
+                        payload = {
+                            "maquina": int(row["MAQUINA"]) if str(row["MAQUINA"]).strip().isdigit() else None,
+                            "fecha": fecha_iso,
+                            "nombre": str(row["NOMBRE"]).strip(),
+                            "correo": str(row["CORREO"]).strip(),
+                            "telefono": norm_phone(str(row["TELEFONO"])),
+                            "folio": str(row["FOLIO"]).strip(),
+                            "contactado": True if str(row["CONTACTADO"]).strip().upper()=="SI" else (False if str(row["CONTACTADO"]).strip().upper()=="NO" else None),
+                            "posible":    True if str(row["POSIBLE"]).strip().upper()=="SI" else (False if str(row["POSIBLE"]).strip().upper()=="NO" else None),
+                            "created_at": utc_now_iso(),
+                            "updated_at": utc_now_iso(),
+                        }
+                        base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
+                        lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
+                        db.collection(leads_collection).document(lead_id).set(payload, merge=True)
+                        ok += 1
+                    except Exception:
+                        fail += 1
+                st.success(f"Importación completada. Éxitos: {ok} | Fallos: {fail}")
+                del st.session_state["_import_df_cache"]
+                _rerun()
