@@ -8,7 +8,7 @@ from datetime import datetime
 def iniciar_firebase():
     try:
         # Reemplaza con tu archivo real
-        cred = credentials.Certificate("elenapost/app/credenciales.json")
+        credenciales_path = "app/credenciales.json"
         firebase_admin.initialize_app(cred)
         return firestore.client()
     except Exception as e:
