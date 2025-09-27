@@ -3,49 +3,71 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 
-# --------------------------
-# Autenticación con Firebase
-# --------------------------
-if not firebase_admin._apps:
-    firebase_info = json.loads(st.secrets["firebase_service_account"])
-    cred = credentials.Certificate(firebase_info)
-    firebase_admin.initialize_app(cred)
+# ---------------------------
+# Inicialización de Firebase
+# ---------------------------
+def iniciar_firebase():
+    if not firebase_admin._apps:
+        cred_json = json.loads(st.secrets["firebase_service_account"])
+        cred = credentials.Certificate(cred_json)
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
 
-db = firestore.client()
+# ---------------------------
+# Guardar en Firestore
+# ---------------------------
+def guardar_datos(db, datos):
+    try:
+        doc_ref = db.collection("registros_enarm").document(datos["folio"])
+        doc_ref.set(datos)
+        return True, "Datos guardados correctamente ✅"
+    except Exception as e:
+        return False, f"Error al guardar datos: {e}"
 
-# --------------------------
-# Interfaz de Streamlit
-# --------------------------
-st.set_page_config(page_title="Registro de folio", layout="centered")
+# ---------------------------
+# Interfaz gráfica Streamlit
+# ---------------------------
+def main():
+    st.set_page_config(page_title="Registro ENARM", layout="centered")
+    st.title("🩺 Registro ENARM")
 
-st.title("📋 Registro de datos ENARM")
+    st.markdown("Por favor ingresa los siguientes datos para registrar tu información:")
 
-with st.form("registro_form"):
-    folio = st.text_input("Folio")
-    curp = st.text_input("CURP")
-    nombre = st.text_input("Nombre completo")
-    fecha = st.text_input("Fecha de examen")
-    sede = st.text_input("Sede")
-    turno = st.selectbox("Turno", ["MATUTINO", "VESPERTINO"])
-    puntaje = st.text_input("Puntaje")
+    with st.form("registro_formulario"):
+        folio = st.text_input("📄 Folio")
+        curp = st.text_input("🆔 CURP")
+        nombre = st.text_input("👤 Nombre completo")
+        fecha_examen = st.text_input("📅 Fecha del examen")
+        sede = st.text_input("📍 Sede")
+        turno = st.selectbox("🕐 Turno", ["MATUTINO", "VESPERTINO"])
+        puntaje = st.text_input("📊 Puntaje")
 
-    enviar = st.form_submit_button("Guardar en Firebase")
+        submit_btn = st.form_submit_button("Registrar")
 
-if enviar:
-    if not all([folio, curp, nombre, fecha, sede, turno, puntaje]):
-        st.warning("Todos los campos son obligatorios.")
-    else:
-        try:
-            doc_ref = db.collection("registros").document(folio)
-            doc_ref.set({
-                "folio": folio,
-                "curp": curp,
-                "nombre": nombre,
-                "fecha": fecha,
-                "sede": sede,
-                "turno": turno,
-                "puntaje": float(puntaje)
-            })
-            st.success("✅ Datos guardados correctamente en Firebase.")
-        except Exception as e:
-            st.error(f"❌ Error al guardar los datos: {e}")
+    if submit_btn:
+        campos = [folio, curp, nombre, fecha_examen, sede, turno, puntaje]
+        if any(c.strip() == "" for c in campos):
+            st.warning("⚠️ Todos los campos son obligatorios.")
+        else:
+            try:
+                puntaje_float = round(float(puntaje), 4)
+                datos = {
+                    "folio": folio,
+                    "curp": curp,
+                    "nombre": nombre,
+                    "fecha_examen": fecha_examen,
+                    "sede": sede,
+                    "turno": turno,
+                    "puntaje": puntaje_float
+                }
+                db = iniciar_firebase()
+                exito, mensaje = guardar_datos(db, datos)
+                if exito:
+                    st.success(mensaje)
+                else:
+                    st.error(mensaje)
+            except ValueError:
+                st.error("❌ El puntaje debe ser un número decimal válido.")
+
+if __name__ == "__main__":
+    main()
