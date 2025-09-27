@@ -1,52 +1,54 @@
-import streamlit as st
-import firebase_admin
-from firebase_admin import credentials, firestore
-from datetime import date
+# Requisitos previos: instalar librería
+!pip install -q google-cloud-firestore
 
-# Inicializar conexión con Firebase
-@st.cache_resource
-def init_firestore():
-    cred = credentials.Certificate("app/serviceAccountKey.json")
-    firebase_admin.initialize_app(cred)
-    return firestore.client()
+import json
+from google.oauth2 import service_account
+from google.cloud import firestore
 
-db = init_firestore()
+# JSON de la cuenta de servicio (sin modificar, incluido aquí directamente)
+FIREBASE_JSON = r"""{
+  "type": "service_account",
+  "project_id": "elena-36be5",
+  "private_key_id": "e5bac82a9d9034efeab75d1e8c550398b33f3512",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq...<TRUNCADO>\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com",
+  "client_id": "117586238746856040628",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40elena-36be5.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}"""
 
-# Nombre de la colección en Firestore
-COLLECTION = "leads"
+# Cargar credenciales
+try:
+    sa_info = json.loads(FIREBASE_JSON)
+    creds = service_account.Credentials.from_service_account_info(sa_info)
+    project_id = sa_info["project_id"]
+    print("✅ Autenticado con éxito. project_id:", project_id)
+except Exception as e:
+    raise SystemExit(f"❌ Error en el JSON de la clave. Detalles: {e}")
 
-# Título de la app
-st.title("📋 Registro manual de contactos")
+# Inicializar cliente Firestore
+client = firestore.Client(project=project_id, credentials=creds)
+print("🔥 Conexión a Firestore lista.")
 
-# Formulario manual
-with st.form("registro_form"):
-    st.subheader("Ingresa los datos del nuevo contacto")
+# ======= REGISTRO MANUAL DE DATOS =======
+registro = {
+    "CONTACTADO": "SI",
+    "CORREO":     "alomarcosss@hotmail.com",
+    "FECHA":      "2025-09-26",
+    "FOLIO":      "2483",
+    "MAQUINA":    1,
+    "NOMBRE":     "marco reyes",
+    "POSIBLE":    "",
+    "TELEFONO":   "4622100885"
+}
 
-    nombre = st.text_input("Nombre completo")
-    correo = st.text_input("Correo electrónico")
-    telefono = st.text_input("Teléfono")
-    fecha = st.date_input("Fecha de contacto", value=date.today())
-    turno = st.selectbox("Turno", ["MATUTINO", "VESPERTINO"])
-    maquina = st.text_input("Número de máquina")
-    folio = st.text_input("Folio asignado")
-    codigo_postal = st.text_input("Código Postal")
+# Guardar documento con ID automático en colección 'leads'
+doc_ref = client.collection("leads").add(registro)[1]
+print("📥 Documento guardado con ID:", doc_ref.id)
 
-    submit = st.form_submit_button("Guardar en Firestore")
-
-# Guardar datos al hacer submit
-if submit:
-    if not nombre or not correo or not folio:
-        st.warning("❗ Los campos nombre, correo y folio son obligatorios.")
-    else:
-        doc_ref = db.collection(COLLECTION).document()
-        doc_ref.set({
-            "nombre": nombre,
-            "correo": correo,
-            "telefono": telefono,
-            "fecha": str(fecha),
-            "turno": turno,
-            "maquina": maquina,
-            "folio": folio,
-            "codigo_postal": codigo_postal,
-        })
-        st.success("✅ ¡Contacto guardado en Firestore!")
+# Leer el documento para validar
+doc_data = doc_ref.get().to_dict()
+print("📄 Contenido guardado:", doc_data)
