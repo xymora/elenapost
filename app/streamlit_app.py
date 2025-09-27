@@ -2,7 +2,7 @@ import streamlit as st
 from google.cloud import firestore
 from google.oauth2 import service_account
 
-# 🔐 NUEVO JSON embebido con la clave correcta
+# 🔐 JSON embebido con clave correcta
 firebase_credentials = {
   "type": "service_account",
   "project_id": "elena-36be5",
@@ -49,32 +49,55 @@ creds = service_account.Credentials.from_service_account_info(firebase_credentia
 db = firestore.Client(credentials=creds, project=firebase_credentials["project_id"])
 
 # 🌐 Interfaz
-st.title("Registro de Cliente")
+st.title("📋 Gestión de Clientes")
 
-with st.form("registro"):
-    nombre = st.text_input("Nombre")
-    correo = st.text_input("Correo")
-    telefono = st.text_input("Teléfono")
-    folio = st.text_input("Folio")
-    fecha = st.date_input("Fecha")
-    maquina = st.number_input("Máquina", step=1, min_value=0)
-    contactado = st.selectbox("¿Contactado?", ["", "SI", "NO"])
-    posible = st.selectbox("¿Posible?", ["", "SI", "NO"])
-    enviar = st.form_submit_button("Guardar")
+# Navegación
+opcion = st.sidebar.radio("Selecciona una acción", ["Registrar nuevo", "Ver registros"])
 
-    if enviar:
-        datos = {
-            "NOMBRE": nombre,
-            "CORREO": correo,
-            "TELEFONO": telefono,
-            "FOLIO": folio,
-            "FECHA": str(fecha),
-            "MAQUINA": int(maquina),
-            "CONTACTADO": contactado,
-            "POSIBLE": posible
-        }
-        try:
-            ref = db.collection("leads").add(datos)
-            st.success(f"✅ Guardado correctamente con ID: {ref[1].id}")
-        except Exception as e:
-            st.error(f"❌ Error al guardar: {e}")
+if opcion == "Registrar nuevo":
+    st.subheader("Agregar nuevo cliente")
+    with st.form("registro"):
+        nombre = st.text_input("Nombre")
+        correo = st.text_input("Correo")
+        telefono = st.text_input("Teléfono")
+        folio = st.text_input("Folio")
+        fecha = st.date_input("Fecha")
+        maquina = st.number_input("Máquina", step=1, min_value=0)
+        contactado = st.selectbox("¿Contactado?", ["", "SI", "NO"])
+        posible = st.selectbox("¿Posible?", ["", "SI", "NO"])
+        enviar = st.form_submit_button("Guardar")
+
+        if enviar:
+            datos = {
+                "NOMBRE": nombre,
+                "CORREO": correo,
+                "TELEFONO": telefono,
+                "FOLIO": folio,
+                "FECHA": str(fecha),
+                "MAQUINA": int(maquina),
+                "CONTACTADO": contactado,
+                "POSIBLE": posible
+            }
+            try:
+                ref = db.collection("leads").add(datos)
+                st.success(f"✅ Guardado correctamente con ID: {ref[1].id}")
+            except Exception as e:
+                st.error(f"❌ Error al guardar: {e}")
+
+elif opcion == "Ver registros":
+    st.subheader("📑 Lista de registros existentes")
+    try:
+        registros = db.collection("leads").stream()
+        lista = []
+        for doc in registros:
+            dato = doc.to_dict()
+            dato["ID"] = doc.id
+            lista.append(dato)
+
+        if lista:
+            st.write(f"🔍 Se encontraron {len(lista)} registros en Firestore.")
+            st.dataframe(lista)
+        else:
+            st.info("No hay registros todavía.")
+    except Exception as e:
+        st.error(f"❌ Error al consultar Firestore: {e}")
