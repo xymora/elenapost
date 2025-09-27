@@ -3,6 +3,7 @@ import json
 import hashlib
 from datetime import datetime, date, timezone
 from typing import Optional, Tuple, List, Dict, Any
+from pathlib import Path
 
 import streamlit as st
 
@@ -13,39 +14,52 @@ from firebase_admin import credentials, firestore
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales DESDE SECRETS (usa [firebase]) =========
-def _load_creds() -> Optional[dict]:
+# ========= Carga de credenciales (Secrets o archivo del repo) =========
+SERVICE_ACCOUNT_FILE = "Secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json"
+
+def _load_creds() -> Tuple[Optional[dict], str]:
     """
-    En streamlit.app pega el JSON del service account bajo la sección:
-    [firebase]
-    type = "service_account"
-    project_id = "..."
-    ...
+    Devuelve (creds_dict, source) tomando primero de st.secrets["firebase"]
+    y, si no existe, del archivo JSON del repo en Secrets/.
     """
+    # 1) Secrets de Streamlit (recomendado)
     try:
-        return dict(st.secrets["firebase"])  # <-- clave 'firebase' (como tu ejemplo que sí funciona)
+        creds = dict(st.secrets["firebase"])
+        return creds, 'secrets'
     except Exception:
-        return None
+        pass
+
+    # 2) Archivo JSON del repo (fallback)
+    p = Path(SERVICE_ACCOUNT_FILE)
+    if p.exists():
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                creds = json.load(f)
+            return creds, f'file:{p.as_posix()}'
+        except Exception as e:
+            st.error(f"Error leyendo {p}: {e}")
+
+    return None, ""
 
 @st.cache_resource(show_spinner=False)
-def init_firebase() -> Tuple[firestore.Client, dict]:
-    """Inicializa Firebase Admin con Firestore usando credenciales de st.secrets['firebase']."""
-    creds = _load_creds()
+def init_firebase() -> Tuple[firestore.Client, dict, str]:
+    """Inicializa Firebase Admin con Firestore usando credenciales encontradas."""
+    creds, source = _load_creds()
     if not creds:
         st.error(
-            "No se encontró la credencial en Secrets.\n\n"
-            "Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección `[firebase]`."
+            "No se encontró la credencial.\n\n"
+            "Opción A) Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección `[firebase]`.\n"
+            "Opción B) Sube el archivo **Secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json** al repositorio."
         )
         st.stop()
 
+    cred = credentials.Certificate(creds)
     try:
-        # Reutiliza app si ya existe
-        firebase_admin.get_app()
+        app = firebase_admin.get_app()
     except ValueError:
-        cred = credentials.Certificate(creds)
-        firebase_admin.initialize_app(cred)
+        app = firebase_admin.initialize_app(cred)
 
-    return firestore.client(), creds
+    return firestore.client(app=app), creds, source
 
 # ========= Utils =========
 def utc_now_iso() -> str:
@@ -75,23 +89,21 @@ def to_csv(rows: List[Dict[str, Any]]) -> bytes:
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
 
 def _rerun():
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
+    try: st.rerun()
+    except Exception: st.experimental_rerun()
 
 # ========= UI =========
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
 st.title("📇 Leads")
 
-db, _creds = init_firebase()
+db, _creds, _source = init_firebase()
 
 # --- 🔧 Diagnóstico en sidebar ---
 st.sidebar.markdown("### 🔧 Diagnóstico Firebase")
 st.sidebar.info(
     f"**project_id:** `{_creds.get('project_id','?')}`\n\n"
     f"**service account:** `{_creds.get('client_email','?')}`\n\n"
-    f"**origen:** `st.secrets[\"firebase\"]`"
+    f"**origen credencial:** `{_source}`"
 )
 
 if st.sidebar.button("Probar escritura ahora"):
@@ -102,9 +114,8 @@ if st.sidebar.button("Probar escritura ahora"):
                 "ping": True,
                 "at": utc_now_iso(),
                 "source": "streamlit_debug",
-                # Para evitar conflictos de índices, guarda timestamps como string ISO
-                "created_at": utc_now_iso(),
-                "updated_at": utc_now_iso(),
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
             },
             merge=True,
         )
@@ -174,10 +185,8 @@ with left:
             st.error("El campo NOMBRE es obligatorio.")
             st.stop()
 
-        now_iso = utc_now_iso()
         payload = {
             "maquina": int(maquina),
-            # fecha en ISO (inicio del día UTC)
             "fecha": datetime(fecha.year, fecha.month, fecha.day, tzinfo=timezone.utc).isoformat(),
             "nombre": nombre.strip(),
             "correo": correo.strip(),
@@ -185,9 +194,8 @@ with left:
             "folio": str(folio).strip(),
             "contactado": norm_bool_from_si_no(contactado),
             "posible": norm_bool_from_si_no(posible),
-            # guarda timestamps como texto ISO para evitar problemas de ordenación sin índices
-            "created_at": now_iso,
-            "updated_at": now_iso,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
         }
         # ID estable para evitar duplicados
         base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
@@ -195,7 +203,6 @@ with left:
 
         db.collection(LEADS_COLLECTION).document(lead_id).set(payload, merge=True)
 
-        # limpiar filtros/recordar último id
         st.session_state.update({
             "f_texto": "", "f_maquina": "", "f_fecha_desde": None, "f_fecha_hasta": None,
             "f_contactado": "(todos)", "f_posible": "(todos)", "f_limite": 200,
@@ -226,7 +233,6 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
-    # Orden por texto ISO (evita índices compuestos con SERVER_TIMESTAMP)
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
 
     docs = list(q.stream())
@@ -235,7 +241,7 @@ with right:
     for d in docs:
         data = d.to_dict() or {}
 
-        # Acepta documentos antiguos con claves en MAYÚSCULAS
+        # Acepta documentos antiguos con claves MAYÚSCULAS
         maquina_val = data.get("maquina", data.get("MAQUINA", ""))
         fecha_val   = data.get("fecha",   data.get("FECHA",   ""))
         nombre_val  = data.get("nombre",  data.get("NOMBRE",  ""))
@@ -245,24 +251,8 @@ with right:
         contactado_val = data.get("contactado", data.get("CONTACTADO", None))
         posible_val    = data.get("posible",    data.get("POSIBLE",    None))
 
-        # Normaliza "SI/NO" string a boolean si viniera en mayúsculas
         if isinstance(contactado_val, str): contactado_val = norm_bool_from_si_no(contactado_val)
         if isinstance(posible_val, str):    posible_val    = norm_bool_from_si_no(posible_val)
-
-        # Filtros de cliente extra (vacíos)
-        if st.session_state.f_contactado == "(vacío)" and contactado_val is not None:
-            continue
-        if st.session_state.f_posible == "(vacío)" and posible_val is not None:
-            continue
-
-        if st.session_state.f_texto.strip():
-            t = st.session_state.f_texto.lower().strip()
-            if not (
-                t in str(nombre_val).lower()
-                or t in str(correo_val).lower()
-                or t in str(folio_val).lower()
-            ):
-                continue
 
         rows.append({
             "ID":        d.id,
