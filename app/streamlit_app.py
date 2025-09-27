@@ -1,85 +1,72 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
+from datetime import datetime
 
-# ---------------------------
-# Inicialización de Firebase
-# ---------------------------
+# ---------- INICIAR FIREBASE -----------
+@st.cache_resource
 def iniciar_firebase():
-    if not firebase_admin._apps:
-        cred_data = st.secrets["firebase_service_account"]
-
-        if isinstance(cred_data, str):
-            try:
-                cred_dict = json.loads(cred_data)
-            except json.JSONDecodeError:
-                raise ValueError("Las credenciales no son un JSON válido.")
-        else:
-            cred_dict = dict(cred_data)
-
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-
-    return firestore.client()
-
-# ---------------------------
-# Guardar en Firestore
-# ---------------------------
-def guardar_datos(db, datos):
     try:
-        doc_ref = db.collection("registros_enarm").document(datos["folio"])
-        doc_ref.set(datos)
-        return True, "Datos guardados correctamente ✅"
+        # Reemplaza con tu archivo real
+        cred = credentials.Certificate("credenciales.json")
+        firebase_admin.initialize_app(cred)
+        return firestore.client()
     except Exception as e:
-        return False, f"Error al guardar datos: {e}"
+        st.error(f"Error iniciando Firebase: {e}")
+        st.stop()
 
-# ---------------------------
-# Interfaz gráfica Streamlit
-# ---------------------------
+# ---------- FUNCIÓN PRINCIPAL ----------
 def main():
-    st.set_page_config(page_title="Registro ENARM", layout="centered")
-    st.title("🩺 Registro ENARM")
+    st.title("Registro ENARM - Streamlit")
+
     st.markdown("Por favor ingresa los siguientes datos para registrar tu información:")
 
-    with st.form("registro_formulario"):
-        folio = st.text_input("📄 Folio")
-        curp = st.text_input("🆔 CURP")
-        nombre = st.text_input("👤 Nombre completo")
-        fecha_examen = st.text_input("📅 Fecha del examen")
-        sede = st.text_input("📍 Sede")
-        turno = st.selectbox("🕐 Turno", ["MATUTINO", "VESPERTINO"])
-        puntaje = st.text_input("📊 Puntaje")
+    folio = st.text_input("📄 Folio")
+    curp = st.text_input("🆔 CURP")
+    nombre = st.text_input("👤 Nombre completo")
+    fecha_examen = st.text_input("📅 Fecha del examen")
+    sede = st.text_input("📍 Sede")
+    turno = st.selectbox("🕓 Turno", ["MATUTINO", "VESPERTINO"])
+    puntaje_input = st.text_input("📈 Puntaje")
 
-        submit_btn = st.form_submit_button("Registrar")
+    if st.button("Registrar"):
+        # Validaciones
+        try:
+            puntaje = float(puntaje_input)
+        except ValueError:
+            st.error("❌ El puntaje debe ser un número decimal válido.")
+            return
 
-        if submit_btn:
-            campos = [folio, curp, nombre, fecha_examen, sede, turno, puntaje]
-            if any(c.strip() == "" for c in campos):
-                st.warning("⚠️ Todos los campos son obligatorios.")
-            else:
-                try:
-                    puntaje_float = round(float(puntaje), 4)
-                    datos = {
-                        "folio": folio,
-                        "curp": curp,
-                        "nombre": nombre,
-                        "fecha_examen": fecha_examen,
-                        "sede": sede,
-                        "turno": turno,
-                        "puntaje": puntaje_float
-                    }
+        if not (folio and curp and nombre and fecha_examen and sede):
+            st.error("❌ Todos los campos deben estar completos.")
+            return
 
-                    db = iniciar_firebase()
-                    exito, mensaje = guardar_datos(db, datos)
+        try:
+            fecha_iso = datetime.strptime(fecha_examen.strip(), "%d de %B de %Y").date().isoformat()
+        except ValueError:
+            try:
+                fecha_iso = datetime.strptime(fecha_examen.strip(), "%Y-%m-%d").date().isoformat()
+            except:
+                fecha_iso = None
 
-                    if exito:
-                        st.success(mensaje)
-                    else:
-                        st.error(mensaje)
+        db = iniciar_firebase()
 
-                except ValueError:
-                    st.error("❌ El puntaje debe ser un número decimal válido.")
+        data = {
+            "folio": folio,
+            "curp": curp,
+            "nombre": nombre,
+            "fecha_examen": fecha_examen,
+            "fecha_iso": fecha_iso,
+            "sede": sede,
+            "turno": turno,
+            "puntaje": puntaje
+        }
+
+        try:
+            db.collection("leads").add(data)
+            st.success("✅ Registro exitoso en Firebase.")
+        except Exception as e:
+            st.error(f"❌ Error al guardar en Firebase: {e}")
 
 if __name__ == "__main__":
     main()
