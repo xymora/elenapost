@@ -33,7 +33,7 @@ try:
     if not firebase_admin._apps:
         cred = credentials.Certificate(CRED_PATH)
         firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://elena-36be5-default-rtdb.firebaseio.com/'
+            'databaseURL': 'firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com'
         })
 except Exception as e:
     st.error(f"Error iniciando Firebase: {e}")
