@@ -1,72 +1,61 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
+from pathlib import Path
 
-# ---------- INICIAR FIREBASE -----------
+# ---------- Ruta del archivo JSON de credenciales ----------
+credenciales_path = Path(__file__).parent / "app" / "credenciales.json"
+
+# ---------- Inicialización de Firebase ----------
 @st.cache_resource
 def iniciar_firebase():
+    if not firebase_admin._apps:
+        if not credenciales_path.exists():
+            raise FileNotFoundError(f"Archivo no encontrado: {credenciales_path}")
+        credenciales = credentials.Certificate(str(credenciales_path))
+        firebase_admin.initialize_app(credenciales)
+    return firestore.client()
+
+# ---------- Interfaz principal ----------
+def main():
+    st.set_page_config(page_title="Demo Firebase ElenaPost", layout="centered")
+    st.title("📄 Registro de Mensajes")
+    st.markdown("Ingresa tu nombre y mensaje para guardarlo en Firebase Firestore.")
+
+    db = None
     try:
-        # Reemplaza con tu archivo real
-        credenciales_path = "app/credenciales.json"
-        firebase_admin.initialize_app(cred)
-        return firestore.client()
+        db = iniciar_firebase()
     except Exception as e:
         st.error(f"Error iniciando Firebase: {e}")
         st.stop()
 
-# ---------- FUNCIÓN PRINCIPAL ----------
-def main():
-    st.title("Registro ENARM - Streamlit")
+    with st.form("formulario_mensaje"):
+        nombre = st.text_input("👤 Nombre")
+        mensaje = st.text_area("💬 Mensaje")
+        enviar = st.form_submit_button("Guardar")
 
-    st.markdown("Por favor ingresa los siguientes datos para registrar tu información:")
-
-    folio = st.text_input("📄 Folio")
-    curp = st.text_input("🆔 CURP")
-    nombre = st.text_input("👤 Nombre completo")
-    fecha_examen = st.text_input("📅 Fecha del examen")
-    sede = st.text_input("📍 Sede")
-    turno = st.selectbox("🕓 Turno", ["MATUTINO", "VESPERTINO"])
-    puntaje_input = st.text_input("📈 Puntaje")
-
-    if st.button("Registrar"):
-        # Validaciones
-        try:
-            puntaje = float(puntaje_input)
-        except ValueError:
-            st.error("❌ El puntaje debe ser un número decimal válido.")
-            return
-
-        if not (folio and curp and nombre and fecha_examen and sede):
-            st.error("❌ Todos los campos deben estar completos.")
-            return
-
-        try:
-            fecha_iso = datetime.strptime(fecha_examen.strip(), "%d de %B de %Y").date().isoformat()
-        except ValueError:
+    if enviar:
+        if nombre.strip() == "" or mensaje.strip() == "":
+            st.warning("⚠️ Por favor completa todos los campos.")
+        else:
             try:
-                fecha_iso = datetime.strptime(fecha_examen.strip(), "%Y-%m-%d").date().isoformat()
-            except:
-                fecha_iso = None
+                doc_ref = db.collection("mensajes").document()
+                doc_ref.set({
+                    "nombre": nombre.strip(),
+                    "mensaje": mensaje.strip()
+                })
+                st.success("✅ Mensaje guardado correctamente.")
+            except Exception as e:
+                st.error(f"❌ Error al guardar mensaje: {e}")
 
-        db = iniciar_firebase()
-
-        data = {
-            "folio": folio,
-            "curp": curp,
-            "nombre": nombre,
-            "fecha_examen": fecha_examen,
-            "fecha_iso": fecha_iso,
-            "sede": sede,
-            "turno": turno,
-            "puntaje": puntaje
-        }
-
-        try:
-            db.collection("leads").add(data)
-            st.success("✅ Registro exitoso en Firebase.")
-        except Exception as e:
-            st.error(f"❌ Error al guardar en Firebase: {e}")
+    st.subheader("📋 Mensajes guardados")
+    try:
+        docs = db.collection("mensajes").stream()
+        for doc in docs:
+            data = doc.to_dict()
+            st.write(f"**{data.get('nombre')}**: {data.get('mensaje')}")
+    except Exception as e:
+        st.warning(f"No se pudieron cargar los mensajes: {e}")
 
 if __name__ == "__main__":
     main()
