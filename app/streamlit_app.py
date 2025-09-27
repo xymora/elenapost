@@ -1,3 +1,4 @@
+# app.py (o streamlit_app.py)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,11 +16,15 @@ from firebase_admin import credentials, firestore
 # 🔐 Inicializar Firebase desde st.secrets
 # ================================
 firestore_active = False
-collection_name = st.secrets.get("collection_name", "clients")  # cámbialo en secrets si quieres
+
+# Lee el nombre de la colección desde secrets (opcional). Default: "clients"
+collection_name = st.secrets.get("collection_name", "clients")
 
 try:
+    # Debe existir [firebase] en .streamlit/secrets.toml
+    firebase_conf = dict(st.secrets["firebase"])
     if not firebase_admin._apps:
-        cred = credentials.Certificate(dict(st.secrets["firebase"]))
+        cred = credentials.Certificate(firebase_conf)
         firebase_admin.initialize_app(cred)
     db = firestore.client()
     firestore_active = True
@@ -28,13 +33,13 @@ except Exception as e:
     firestore_active = False
 
 # ================================
-# 🔄 Cargar datos desde Firestore (con timeout) o CSV
+# 🔄 Cargar datos desde Firestore (con timeout) o CSV local de respaldo
 # ================================
-def try_firestore_fetch():
+def try_firestore_fetch() -> pd.DataFrame:
     try:
         rows = []
         for doc in db.collection(collection_name).stream():
-            d = doc.to_dict()
+            d = doc.to_dict() or {}
             d["id"] = doc.id
             rows.append(d)
         return pd.DataFrame(rows)
@@ -42,8 +47,8 @@ def try_firestore_fetch():
         return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def load_data():
-    # 1) Firestore con timeout
+def load_data() -> pd.DataFrame:
+    # 1) Firestore con timeout corto
     if firestore_active:
         try:
             with concurrent.futures.ThreadPoolExecutor() as ex:
@@ -53,8 +58,8 @@ def load_data():
                     return df
                 st.warning("Firestore devolvió vacío. Usando CSV de respaldo.")
         except Exception:
-            st.warning("⏱️ Firestore no respondió a tiempo. Usando CSV.")
-    # 2) CSV local de respaldo
+            st.warning("⏱️ Firestore no respondió a tiempo. Usando CSV de respaldo.")
+    # 2) CSVs locales candidatos
     for path in [
         "notebooks/segmentation_data_recruitment.csv",
         "segmentation_data_recruitment.csv",
@@ -77,7 +82,7 @@ for c in num_cols:
     if c in df.columns:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-# Asegura columna 'user' (si no existe, crea una)
+# Asegura columna 'user' (si no existe, crea una secuencial)
 if "user" not in df.columns:
     df["user"] = df.index.astype(str)
 
@@ -140,7 +145,7 @@ with st.sidebar:
     if 'search_active' not in st.session_state:
         st.session_state['search_active'] = False
 
-    search_title = st.text_input("👤 Usuario exacto", key='user_search')
+    st.text_input("👤 Usuario exacto", key='user_search')
     b1, b2 = st.columns(2)
     if b1.button("Buscar"):
         st.session_state['search_active'] = True
@@ -183,21 +188,19 @@ if st.session_state['search_active'] and st.session_state['user_search'] and len
     )
 
     if {'avg_amount_withdrawals','avg_purchases_per_week','age'}.issubset(df.columns):
-        pct_retiros = (df['avg_amount_withdrawals'] <= user_df['avg_amount_withdrawals']).mean() * 100
-        pct_compras = (df['avg_purchases_per_week'] <= user_df['avg_purchases_per_week']).mean() * 100
-
+        # hist retiros
         fig1 = px.histogram(df, x='avg_amount_withdrawals', nbins=20,
                             title='Distribución Retiros (tu posición)')
         fig1.add_vline(x=user_df['avg_amount_withdrawals'], line_dash='dash',
                        annotation_text='Tú', annotation_position='top right')
         st.plotly_chart(fig1, use_container_width=True)
-
+        # hist compras
         fig2 = px.histogram(df, x='avg_purchases_per_week', nbins=20,
                             title='Distribución Compras/Semana (tu posición)')
         fig2.add_vline(x=user_df['avg_purchases_per_week'], line_dash='dash',
                        annotation_text='Tú', annotation_position='top right')
         st.plotly_chart(fig2, use_container_width=True)
-
+        # radar
         radar_df = pd.DataFrame({
             'Feature': ['Retiros','Compras/Semana','Edad'],
             'Value': [user_df['avg_amount_withdrawals'],
