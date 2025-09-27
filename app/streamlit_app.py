@@ -1,4 +1,5 @@
 # app/streamlit_app.py
+import json
 import hashlib
 from datetime import datetime, date, timezone
 from typing import Optional, Tuple, List, Dict, Any
@@ -9,8 +10,8 @@ import streamlit as st
 # TOML reader (py3.11+: tomllib; fallback: tomli)
 try:
     import tomllib  # Python 3.11+
-except Exception:  # py<3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+except Exception:   # py<3.11
+    import tomli as tomllib  # type: ignore
 
 # Firebase Admin
 import firebase_admin
@@ -19,51 +20,73 @@ from firebase_admin import credentials, firestore
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales (st.secrets o .streamlit/secrets.toml) =========
-TOML_PATH = Path(".streamlit/secrets.toml")
-
-def _normalize_private_key(creds: dict) -> dict:
-    """Convierte '\\n' a saltos reales si fuese necesario."""
-    pk = creds.get("private_key")
-    if isinstance(pk, str) and "\\n" in pk:
-        creds = {**creds, "private_key": pk.replace("\\n", "\n")}
-    return creds
-
-def _load_creds() -> Tuple[Optional[dict], str]:
+# ========= Detección robusta del secrets.toml =========
+def _candidate_secrets_paths() -> List[Path]:
     """
-    Devuelve (creds_dict, source):
+    Devuelve rutas candidatas donde podría vivir .streamlit/secrets.toml
+    - Raíz del repo (dos niveles arriba del archivo actual)
+    - Carpeta del script (si el working dir cambió)
+    - Working directory actual
+    """
+    here = Path(__file__).resolve()
+    repo_root = here.parents[1]            # …/repo/
+    script_dir = here.parent               # …/repo/app/
+    cwd = Path.cwd()                       # working dir (varía en Cloud vs local)
+
+    candidates = [
+        repo_root / ".streamlit" / "secrets.toml",
+        cwd / ".streamlit" / "secrets.toml",
+        script_dir / ".streamlit" / "secrets.toml",
+    ]
+    # quitar duplicados preservando orden
+    seen, unique = set(), []
+    for p in candidates:
+        if p not in seen:
+            unique.append(p)
+            seen.add(p)
+    return unique
+
+def _load_creds() -> Tuple[Optional[dict], str, List[str]]:
+    """
+    Devuelve (creds_dict, source, tried_paths)
       1) st.secrets['firebase'] (Streamlit Cloud)
-      2) .streamlit/secrets.toml -> [firebase] (local/repo)
+      2) .streamlit/secrets.toml -> [firebase] (en varias ubicaciones)
     """
+    tried: List[str] = []
+
     # 1) Secrets de Streamlit (UI de streamlit.app)
     try:
         creds = dict(st.secrets["firebase"])
-        return _normalize_private_key(creds), "st.secrets[firebase]"
+        return creds, 'st.secrets["firebase"]', tried
     except Exception:
         pass
 
-    # 2) Archivo TOML del repo
-    if TOML_PATH.exists():
-        try:
-            with TOML_PATH.open("rb") as f:
-                data = tomllib.load(f)
-            creds = data.get("firebase")
-            if isinstance(creds, dict) and "private_key" in creds:
-                return _normalize_private_key(creds), TOML_PATH.as_posix()
-        except Exception as e:
-            st.error(f"Error leyendo {TOML_PATH}: {e}")
+    # 2) Leer archivo TOML desde rutas candidatas
+    for p in _candidate_secrets_paths():
+        tried.append(p.as_posix())
+        if p.exists():
+            try:
+                with p.open("rb") as f:
+                    data = tomllib.load(f)
+                creds = data.get("firebase")
+                if isinstance(creds, dict) and "private_key" in creds:
+                    return creds, p.as_posix(), tried
+            except Exception:
+                # prueba siguiente candidato
+                continue
 
-    return None, ""
+    return None, "", tried
 
 @st.cache_resource(show_spinner=False)
-def init_firebase() -> Tuple[firestore.Client, dict, str]:
+def init_firebase() -> Tuple[firestore.Client, dict, str, List[str]]:
     """Inicializa Firebase Admin con Firestore usando credenciales encontradas."""
-    creds, source = _load_creds()
+    creds, source, tried = _load_creds()
     if not creds:
         st.error(
             "No se encontró la credencial.\n\n"
             "• Opción A) Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo `[firebase]`.\n"
-            f"• Opción B) Crea/edita **{TOML_PATH}** con una sección `[firebase]` válida."
+            "• Opción B) Crea/edita **.streamlit/secrets.toml** con una sección `[firebase]` válida.\n\n"
+            "Rutas probadas:\n" + "\n".join(f"  • {p}" for p in tried)
         )
         st.stop()
 
@@ -73,7 +96,7 @@ def init_firebase() -> Tuple[firestore.Client, dict, str]:
     except ValueError:
         app = firebase_admin.initialize_app(cred)
 
-    return firestore.client(app=app), creds, source
+    return firestore.client(app=app), creds, source, tried
 
 # ========= Utils =========
 def utc_now_iso() -> str:
@@ -110,14 +133,15 @@ def _rerun():
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
 st.title("📇 Leads")
 
-db, _creds, _source = init_firebase()
+db, _creds, _source, _tried = init_firebase()
 
 # --- 🔧 Diagnóstico en sidebar ---
 st.sidebar.markdown("### 🔧 Diagnóstico Firebase")
 st.sidebar.info(
     f"**project_id:** `{_creds.get('project_id','?')}`\n\n"
     f"**service account:** `{_creds.get('client_email','?')}`\n\n"
-    f"**origen credencial:** `{_source}`"
+    f"**origen credencial:** `{_source}`\n\n"
+    f"**rutas probadas:**\n" + "\n".join(f"- {p}" for p in _tried)
 )
 
 if st.sidebar.button("Probar escritura ahora"):
@@ -211,7 +235,6 @@ with left:
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
         }
-        # ID estable para evitar duplicados
         base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
         lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
 
@@ -254,8 +277,6 @@ with right:
     rows: List[Dict[str, Any]] = []
     for d in docs:
         data = d.to_dict() or {}
-
-        # Acepta documentos antiguos con claves MAYÚSCULAS
         maquina_val = data.get("maquina", data.get("MAQUINA", ""))
         fecha_val   = data.get("fecha",   data.get("FECHA",   ""))
         nombre_val  = data.get("nombre",  data.get("NOMBRE",  ""))
