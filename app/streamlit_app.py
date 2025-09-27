@@ -15,28 +15,65 @@ APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"
 
-# ========= Credenciales / Firebase =========
+# ========= Carga de credenciales =========
 def _load_creds() -> Optional[dict]:
-    """Carga credenciales desde .streamlit/secrets.toml (clave firebase_service_account)
-    o desde secrets/firebase_service_account.json."""
+    """Carga credenciales en este orden:
+    1) st.secrets['firebase_service_account'] (si existe)
+    2) secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json (tu nombre específico)
+    3) secrets/firebase_service_account.json (fallback)
+    4) la primera .json que encuentre en secrets/
+    5) variables de entorno FIREBASE_CREDENTIALS_PATH o FIREBASE_CREDENTIALS_JSON
+    """
+    # 1) .streamlit/secrets.toml → [firebase_service_account]
     try:
         return dict(st.secrets["firebase_service_account"])
     except Exception:
         pass
-    p = os.path.join("secrets", "firebase_service_account.json")
-    if os.path.exists(p):
-        with open(p, "r", encoding="utf-8") as f:
+
+    # 2) Tu nombre específico
+    specific = os.path.join("secrets", "elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json")
+    if os.path.exists(specific):
+        with open(specific, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    # 3) Nombre clásico (fallback)
+    classic = os.path.join("secrets", "firebase_service_account.json")
+    if os.path.exists(classic):
+        with open(classic, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # 4) Cualquier .json en secrets/ (último recurso)
+    if os.path.isdir("secrets"):
+        for fname in os.listdir("secrets"):
+            if fname.lower().endswith(".json"):
+                with open(os.path.join("secrets", fname), "r", encoding="utf-8") as f:
+                    return json.load(f)
+
+    # 5) Variables de entorno
+    path_env = os.getenv("FIREBASE_CREDENTIALS_PATH")
+    if path_env and os.path.exists(path_env):
+        with open(path_env, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    json_env = os.getenv("FIREBASE_CREDENTIALS_JSON")
+    if json_env:
+        try:
+            return json.loads(json_env)
+        except Exception:
+            pass
+
     return None
 
 @st.cache_resource(show_spinner=False)
 def init_firebase() -> Tuple[firestore.Client, Any]:
+    """Inicializa Firebase Admin con Firestore y Bucket."""
     creds = _load_creds()
     if not creds:
         st.error(
             "Faltan credenciales de Firebase.\n\n"
-            "• Coloca tu JSON en `.streamlit/secrets.toml` (sección `[firebase_service_account]`) **o**\n"
-            "• Guarda el archivo en `secrets/firebase_service_account.json`."
+            "• Coloca el archivo JSON en `secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json`, o\n"
+            "• Usa `.streamlit/secrets.toml` con la sección `[firebase_service_account]`, o\n"
+            "• Configura `FIREBASE_CREDENTIALS_PATH` / `FIREBASE_CREDENTIALS_JSON`."
         )
         st.stop()
 
@@ -89,7 +126,7 @@ st.title("📇 Leads")
 
 db, _bucket = init_firebase()
 
-# --- 🔧 Diagnóstico en sidebar (AHORA sí, después de definir _load_creds) ---
+# --- 🔧 Diagnóstico en sidebar ---
 creds_info = _load_creds() or {}
 proj = creds_info.get("project_id", "¿desconocido?")
 svc  = creds_info.get("client_email", "¿desconocido?")
@@ -133,9 +170,11 @@ with left:
 
     c_bool1, c_bool2 = st.columns(2)
     with c_bool1:
-        st.session_state.f_contactado = st.selectbox("Contactado", ["(todos)", "SI", "NO", "(vacío)"], index=["(todos)","SI","NO","(vacío)"].index(st.session_state.f_contactado))
+        st.session_state.f_contactado = st.selectbox("Contactado", ["(todos)", "SI", "NO", "(vacío)"],
+                                                     index=["(todos)","SI","NO","(vacío)"].index(st.session_state.f_contactado))
     with c_bool2:
-        st.session_state.f_posible = st.selectbox("Posible", ["(todos)", "SI", "NO", "(vacío)"], index=["(todos)","SI","NO","(vacío)"].index(st.session_state.f_posible))
+        st.session_state.f_posible = st.selectbox("Posible", ["(todos)", "SI", "NO", "(vacío)"],
+                                                  index=["(todos)","SI","NO","(vacío)"].index(st.session_state.f_posible))
 
     st.session_state.f_limite = st.slider("Límite", 10, 1000, st.session_state.f_limite, 10)
 
@@ -180,6 +219,7 @@ with left:
             "created_at": now_iso,
             "updated_at": now_iso,
         }
+        # ID estable: evita duplicados si repiten nombre|folio|telefono
         base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
         lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
 
@@ -194,7 +234,7 @@ with left:
         st.success("Lead guardado.")
         _rerun()
 
-# -------- DERECHA: Últimos registros (siempre con filtros activos) --------
+# -------- DERECHA: Últimos registros (filtrados) --------
 with right:
     st.markdown("### Últimos registros")
 
@@ -216,6 +256,7 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
+    # orden por updated_at desc para que el último guardado salga arriba
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
     docs = [d for d in q.stream()]
 
@@ -223,7 +264,7 @@ with right:
     for d in docs:
         data = d.to_dict() or {}
 
-        # Filtros de cliente
+        # Filtros de cliente extra
         if st.session_state.f_contactado == "(vacío)" and data.get("contactado") is not None:
             continue
         if st.session_state.f_posible == "(vacío)" and data.get("posible") is not None:
@@ -261,6 +302,7 @@ with right:
     else:
         import pandas as pd
         df = pd.DataFrame(rows)
+        # mover el último guardado (si existe) a la primera fila
         if st.session_state.just_saved_id:
             df["__is_last__"] = (df["ID"] == st.session_state.just_saved_id)
             df = pd.concat([df[df["__is_last__"]], df[~df["__is_last__"]]]).drop(columns="__is_last__")
