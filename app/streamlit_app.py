@@ -7,6 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
+# TOML reader (py3.11+: tomllib; fallback: tomli)
+try:
+    import tomllib  # type: ignore[attr-defined]
+except Exception:  # py<3.11
+    import tomli as tomllib  # type: ignore[no-redef]
+
 # Firebase Admin
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -14,30 +20,32 @@ from firebase_admin import credentials, firestore
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales (Secrets o archivo del repo) =========
-SERVICE_ACCOUNT_FILE = "Secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json"
+# ========= Carga de credenciales (Secrets o .streamlit/secrets.toml) =========
+TOML_PATH = Path(".streamlit/secrets.toml")  # <-- archivo local en el repo
 
 def _load_creds() -> Tuple[Optional[dict], str]:
     """
-    Devuelve (creds_dict, source) tomando primero de st.secrets["firebase"]
-    y, si no existe, del archivo JSON del repo en Secrets/.
+    Devuelve (creds_dict, source):
+      1) st.secrets['firebase'] (Streamlit Cloud)
+      2) .streamlit/secrets.toml -> [firebase] (local/repo)
     """
-    # 1) Secrets de Streamlit (recomendado)
+    # 1) Secrets de Streamlit (UI de streamlit.app)
     try:
         creds = dict(st.secrets["firebase"])
-        return creds, 'secrets'
+        return creds, "st.secrets[firebase]"
     except Exception:
         pass
 
-    # 2) Archivo JSON del repo (fallback)
-    p = Path(SERVICE_ACCOUNT_FILE)
-    if p.exists():
+    # 2) Archivo TOML del repo
+    if TOML_PATH.exists():
         try:
-            with p.open("r", encoding="utf-8") as f:
-                creds = json.load(f)
-            return creds, f'file:{p.as_posix()}'
+            with TOML_PATH.open("rb") as f:
+                data = tomllib.load(f)
+            creds = data.get("firebase")
+            if isinstance(creds, dict) and "private_key" in creds:
+                return creds, TOML_PATH.as_posix()
         except Exception as e:
-            st.error(f"Error leyendo {p}: {e}")
+            st.error(f"Error leyendo {TOML_PATH}: {e}")
 
     return None, ""
 
@@ -48,8 +56,8 @@ def init_firebase() -> Tuple[firestore.Client, dict, str]:
     if not creds:
         st.error(
             "No se encontró la credencial.\n\n"
-            "Opción A) Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección `[firebase]`.\n"
-            "Opción B) Sube el archivo **Secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json** al repositorio."
+            "• Opción A) Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo `[firebase]`.\n"
+            f"• Opción B) Crea/edita **{TOML_PATH}** con una sección `[firebase]` válida."
         )
         st.stop()
 
