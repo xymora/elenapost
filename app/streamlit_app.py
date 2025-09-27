@@ -1,14 +1,13 @@
 import streamlit as st
-import json
-from google.oauth2 import service_account
 from google.cloud import firestore
+from google.oauth2 import service_account
 
-# 🔐 JSON embebido CON LLAVE PRIVADA FORMATEADA CORRECTAMENTE
-FIREBASE_JSON = {
-  "type": "service_account",
-  "project_id": "elena-36be5",
-  "private_key_id": "e5bac82a9d9034efeab75d1e8c550398b33f3512",
-  "private_key": """-----BEGIN PRIVATE KEY-----
+# 👉 Configura tu credencial Firestore embebida
+CREDENTIALS = service_account.Credentials.from_service_account_info({
+    "type": "service_account",
+    "project_id": "elena-36be5",
+    "private_key_id": "e5bac82a9d9034efeab75d1e8c550398b33f3512",
+    "private_key": """-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCu8X87z8D5yXM8
 cO3EStMTJVB5y/2iYxq56WgssSbzFkPnvNVq5vXX+Ft1WkI1n+IPYoOidGyh6tv5
 zhrcmJVUjWmrfSTqHJA2C1UkH3Ta0RPDO7qlEkMt7o7aIEsDOOZUKuVEHGdPpG05
@@ -36,51 +35,43 @@ C4sSfWJTQ2mf3mCBpcYTEFmFdqE2vliOlO1jae1lrE/aCckx3pOlBntXAhUqPwH/
 hbDP8pvPN6pbcezYZ0j0iC6FptBUna8U2vXOc6kC1nGOnp31JKX/62BLG2wFQfGp
 pKnBzGhoxIXlRj+9yOoXjh4=
 -----END PRIVATE KEY-----""",
-  "client_email": "firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com",
-  "client_id": "117586238746856040628",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com",
-  "universe_domain": "googleapis.com"
-}
+    "client_email": "firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com",
+    "client_id": "117586238746856040628",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc@elena-36be5.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+})
 
-# Inicializar conexión
-try:
-    creds = service_account.Credentials.from_service_account_info(FIREBASE_JSON)
-    db = firestore.Client(project=FIREBASE_JSON["project_id"], credentials=creds)
-    st.success("🔥 Firestore listo.")
-except Exception as e:
-    st.error(f"❌ Error de conexión: {e}")
-    st.stop()
+# 👉 Cliente Firestore
+db = firestore.Client(credentials=CREDENTIALS, project="elena-36be5")
 
-# Formulario Streamlit
-st.title("📋 Registro en Firestore")
+# 👉 UI de la app
+st.title("Formulario de registro")
 
-with st.form("formulario"):
-    nombre = st.text_input("Nombre")
-    correo = st.text_input("Correo")
-    telefono = st.text_input("Teléfono")
-    folio = st.text_input("Folio")
-    fecha = st.date_input("Fecha")
-    maquina = st.number_input("Máquina", min_value=0, step=1)
-    contactado = st.selectbox("¿Contactado?", ["", "SI", "NO"])
-    posible = st.selectbox("¿Posible?", ["", "SI", "NO"])
-    enviar = st.form_submit_button("Guardar")
+nombre = st.text_input("Nombre")
+correo = st.text_input("Correo electrónico")
+telefono = st.text_input("Teléfono")
+folio = st.text_input("Folio")
+fecha = st.date_input("Fecha")
+maquina = st.number_input("Máquina", step=1, min_value=0)
+contactado = st.radio("¿Contactado?", ["SI", "NO", ""])
+posible = st.radio("¿Posible?", ["SI", "NO", ""])
 
-    if enviar:
-        data = {
-            "MAQUINA": int(maquina),
-            "FECHA": str(fecha),
+if st.button("Guardar en Firestore"):
+    try:
+        doc = {
             "NOMBRE": nombre,
             "CORREO": correo,
             "TELEFONO": telefono,
             "FOLIO": folio,
+            "FECHA": str(fecha),
+            "MAQUINA": int(maquina),
             "CONTACTADO": contactado,
             "POSIBLE": posible
         }
-        try:
-            doc_ref = db.collection("leads").add(data)
-            st.success(f"✅ Guardado en Firestore con ID: {doc_ref[1].id}")
-        except Exception as e:
-            st.error(f"❌ Error al guardar: {e}")
+        ref = db.collection("leads").add(doc)
+        st.success(f"Documento guardado con ID: {ref[1].id}")
+    except Exception as e:
+        st.error(f"❌ Error al guardar: {e}")
