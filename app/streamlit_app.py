@@ -8,7 +8,7 @@ import json
 # ---------------------------
 def iniciar_firebase():
     if not firebase_admin._apps:
-        cred_json = json.loads(st.secrets["firebase_service_account"])
+        cred_json = st.secrets["firebase_service_account"]
         cred = credentials.Certificate(cred_json)
         firebase_admin.initialize_app(cred)
     return firestore.client()
