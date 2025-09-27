@@ -10,7 +10,7 @@ import streamlit as st
 # Firebase Admin
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
-from google.cloud.storage.bucket import Bucket  # type hints
+from google.cloud.storage.bucket import Bucket  # solo para type hints
 
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
@@ -18,7 +18,9 @@ BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"
 
 # ========= Credenciales / Firebase =========
 def _load_creds() -> Optional[dict]:
+    """Carga el service account desde st.secrets o secrets/firebase_service_account.json"""
     try:
+        # .streamlit/secrets.toml con la sección [firebase_service_account]
         return dict(st.secrets["firebase_service_account"])
     except Exception:
         pass
@@ -33,9 +35,10 @@ def init_firebase() -> Tuple[firestore.Client, Bucket]:
     creds = _load_creds()
     if not creds:
         st.error(
-            "Faltan credenciales de Firebase.\n"
-            "Coloca tu JSON en `.streamlit/secrets.toml` (clave `firebase_service_account`) "
-            "o en `secrets/firebase_service_account.json`."
+            "Faltan credenciales de Firebase.\n\n"
+            "• Coloca tu JSON en `.streamlit/secrets.toml` bajo la clave `[firebase_service_account]`,\n"
+            "  o en `secrets/firebase_service_account.json`.\n\n"
+            "Revisa la documentación del proyecto para ver un ejemplo."
         )
         st.stop()
 
@@ -65,7 +68,7 @@ def norm_phone(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit() or c == "+")
 
 def norm_bool_from_si_no(x: str):
-    v = str(x).strip().lower()
+    v = str(x or "").strip().lower()
     if v in ("si", "sí", "1", "true", "y", "yes"): return True
     if v in ("no", "0", "false", "n"): return False
     return None
@@ -79,8 +82,23 @@ def to_csv(rows: List[Dict[str, Any]]) -> bytes:
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
 
 def _rerun():
-    try: st.rerun()
-    except Exception: st.experimental_rerun()
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+def getf(d: dict, low: str, up: str):
+    """Obtiene d[low] o d[up] (minúscula/mayúscula) si existe."""
+    return d.get(low, d.get(up, None))
+
+def to_bool_any(x):
+    """Convierte 'SI'/'NO'/True/False/None a bool|None."""
+    if isinstance(x, bool): return x
+    if x is None: return None
+    s = str(x).strip().lower()
+    if s in ("si","sí","true","1","y","yes"): return True
+    if s in ("no","false","0","n"): return False
+    return None
 
 # ========= UI =========
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
@@ -100,7 +118,7 @@ left, right = st.columns([1, 2.3], gap="large")
 
 # -------- IZQUIERDA: Filtros + Nuevo lead --------
 with left:
-    st.markdown("### Filtros personalizados")
+    st.markdown("### Filtros")
 
     st.session_state.f_texto   = st.text_input("Buscar por NOMBRE / CORREO / FOLIO", value=st.session_state.f_texto)
     st.session_state.f_maquina = st.text_input("Máquina (igual a)", value=st.session_state.f_maquina, placeholder="ej. 1")
@@ -147,7 +165,7 @@ with left:
             st.error("El campo NOMBRE es obligatorio.")
             st.stop()
 
-        payload = {
+        payload_low = {
             "maquina": int(maquina),
             "fecha": datetime(fecha.year, fecha.month, fecha.day, tzinfo=timezone.utc).isoformat(),
             "nombre": nombre.strip(),
@@ -159,12 +177,25 @@ with left:
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
         }
-        base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
+        # Duplicamos en MAYÚSCULAS para compatibilidad con lo ya guardado desde Colab
+        payload_up = {
+            "MAQUINA": payload_low["maquina"],
+            "FECHA": payload_low["fecha"],
+            "NOMBRE": payload_low["nombre"],
+            "CORREO": payload_low["correo"],
+            "TELEFONO": payload_low["telefono"],
+            "FOLIO": payload_low["folio"],
+            "CONTACTADO": "SI" if payload_low["contactado"] else ("NO" if payload_low["contactado"] is False else ""),
+            "POSIBLE": "SI" if payload_low["posible"] else ("NO" if payload_low["posible"] is False else ""),
+        }
+        payload = {**payload_low, **payload_up}
+
+        base = f"{payload_low['nombre']}|{payload_low['folio']}|{payload_low['telefono']}"
         lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
 
         db.collection(LEADS_COLLECTION).document(lead_id).set(payload, merge=True)
 
-        # 👉 limpiar filtros para que nada lo oculte y recordar el último id
+        # limpiar filtros para que nada lo oculte y recordar el último id
         st.session_state.update({
             "f_texto": "", "f_maquina": "", "f_fecha_desde": None, "f_fecha_hasta": None,
             "f_contactado": "(todos)", "f_posible": "(todos)", "f_limite": 200,
@@ -173,69 +204,95 @@ with left:
         st.success("Lead guardado.")
         _rerun()
 
-# -------- DERECHA: Últimos registros (siempre con filtros activos) --------
+# -------- DERECHA: Últimos registros (agnóstico a mayúsculas/minúsculas) --------
 with right:
     st.markdown("### Últimos registros")
 
-    q = db.collection(LEADS_COLLECTION)
-
-    if st.session_state.f_maquina.strip().isdigit():
-        q = q.where("maquina", "==", int(st.session_state.f_maquina.strip()))
-
-    if isinstance(st.session_state.f_fecha_desde, date):
-        q = q.where("fecha", ">=", day_start_iso(st.session_state.f_fecha_desde))
-    if isinstance(st.session_state.f_fecha_hasta, date):
-        q = q.where("fecha", "<=", day_end_iso(st.session_state.f_fecha_hasta))
-
-    def where_bool(sel: str, field: str, query):
-        if sel == "SI": return query.where(field, "==", True)
-        if sel == "NO": return query.where(field, "==", False)
-        return query
-
-    q = where_bool(st.session_state.f_contactado, "contactado", q)
-    q = where_bool(st.session_state.f_posible,    "posible",    q)
-
-    # Ordenamos por updated_at para que el recién guardado salga arriba
-    q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
-    docs = [d for d in q.stream()]
+    # Traemos últimos N sin filtros del servidor (evita perder docs por esquema distinto)
+    try:
+        try:
+            docs = list(
+                db.collection(LEADS_COLLECTION)
+                  .order_by("updated_at", direction=firestore.Query.DESCENDING)
+                  .limit(st.session_state.f_limite)
+                  .stream()
+            )
+        except Exception:
+            # Si no existe updated_at en algunos docs, ordenamos por id
+            docs = list(
+                db.collection(LEADS_COLLECTION)
+                  .order_by("__name__", direction=firestore.Query.DESCENDING)
+                  .limit(st.session_state.f_limite)
+                  .stream()
+            )
+    except Exception as e:
+        st.error(f"Error consultando Firestore: {e}")
+        st.stop()
 
     rows: List[Dict[str, Any]] = []
+    from_date = st.session_state.f_fecha_desde
+    to_date   = st.session_state.f_fecha_hasta
+    texto     = st.session_state.f_texto.lower().strip()
+    fmaq      = st.session_state.f_maquina.strip()
+    fcont     = st.session_state.f_contactado
+    fpos      = st.session_state.f_posible
+
     for d in docs:
         data = d.to_dict() or {}
 
-        # Filtros de cliente:
-        if st.session_state.f_contactado == "(vacío)" and data.get("contactado") is not None:
-            continue
-        if st.session_state.f_posible == "(vacío)" and data.get("posible") is not None:
+        # Leer ambos esquemas
+        v_maquina   = getf(data, "maquina", "MAQUINA")
+        v_fecha     = getf(data, "fecha", "FECHA")
+        v_nombre    = getf(data, "nombre", "NOMBRE")
+        v_correo    = getf(data, "correo", "CORREO")
+        v_telefono  = getf(data, "telefono", "TELEFONO")
+        v_folio     = getf(data, "folio", "FOLIO")
+        v_contact   = getf(data, "contactado", "CONTACTADO")
+        v_posible   = getf(data, "posible", "POSIBLE")
+
+        b_contact = to_bool_any(v_contact)
+        b_posible = to_bool_any(v_posible)
+
+        # ===== Filtros en cliente =====
+        if fmaq.isdigit() and str(v_maquina) != fmaq:
             continue
 
-        if st.session_state.f_texto.strip():
-            t = st.session_state.f_texto.lower().strip()
-            if not (
-                t in str(data.get("nombre","")).lower()
-                or t in str(data.get("correo","")).lower()
-                or t in str(data.get("folio","")).lower()
-            ):
+        if isinstance(from_date, date):
+            if not v_fecha or v_fecha < day_start_iso(from_date):
+                continue
+        if isinstance(to_date, date):
+            if not v_fecha or v_fecha > day_end_iso(to_date):
                 continue
 
-        row = {
+        if fcont == "SI" and b_contact is not True:   continue
+        if fcont == "NO" and b_contact is not False:  continue
+        if fcont == "(vacío)" and b_contact is not None: continue
+
+        if fpos == "SI" and b_posible is not True:    continue
+        if fpos == "NO" and b_posible is not False:   continue
+        if fpos == "(vacío)" and b_posible is not None: continue
+
+        if texto:
+            blob = " ".join([str(x or "") for x in (v_nombre, v_correo, v_folio)]).lower()
+            if texto not in blob:
+                continue
+
+        rows.append({
             "ID":        d.id,
-            "MAQUINA":   data.get("maquina", ""),
-            "FECHA":     data.get("fecha", ""),
-            "NOMBRE":    data.get("nombre", ""),
-            "CORREO":    data.get("correo", ""),
-            "TELEFONO":  data.get("telefono", ""),
-            "FOLIO":     data.get("folio", ""),
-            "CONTACTADO":as_si_no(data.get("contactado")),
-            "POSIBLE":   as_si_no(data.get("posible")),
-        }
-        rows.append(row)
+            "MAQUINA":   v_maquina or "",
+            "FECHA":     v_fecha or "",
+            "NOMBRE":    v_nombre or "",
+            "CORREO":    v_correo or "",
+            "TELEFONO":  v_telefono or "",
+            "FOLIO":     v_folio or "",
+            "CONTACTADO":as_si_no(b_contact),
+            "POSIBLE":   as_si_no(b_posible),
+        })
 
     total = len(rows)
     st.caption(f"Total encontradas: {total}")
 
     if total == 0:
-        # Si justo guardaste algo, avisa que los filtros lo esconden
         if st.session_state.just_saved_id:
             st.warning("Acabas de guardar un lead, pero algún filtro lo está ocultando. Pulsa **🧹 Limpiar filtros**.")
         else:
@@ -243,7 +300,8 @@ with right:
     else:
         import pandas as pd
         df = pd.DataFrame(rows)
-        # Resaltar el último guardado (si existe) moviéndolo a la primera fila
+
+        # Resaltar el último guardado (si existe)
         if st.session_state.just_saved_id:
             df["__is_last__"] = (df["ID"] == st.session_state.just_saved_id)
             df = pd.concat([df[df["__is_last__"]], df[~df["__is_last__"]]]).drop(columns="__is_last__")
