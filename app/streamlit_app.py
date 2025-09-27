@@ -18,12 +18,12 @@ def probar_firestore_cliente(creds_dict: dict):
 
     # 2) Documento de prueba (puedes cambiar los campos si quieres)
     data = {
-        "MAQUINA":   1,
+        "MAQUINA":   2,
         "FECHA":     "2025-09-26",
-        "NOMBRE":    "marco reyes",
-        "CORREO":    "alomarcosss@hotmail.com",
-        "TELEFONO":  "4622100885",
-        "FOLIO":     "2483",
+        "NOMBRE":    "marca reyes",
+        "CORREO":    "omarcosss@hotmail.com",
+        "TELEFONO":  "5522100885",
+        "FOLIO":     "1183",
         "CONTACTADO":"SI",
         "POSIBLE":   ""
     }
