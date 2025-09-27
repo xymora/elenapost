@@ -1,6 +1,8 @@
 # app/streamlit_app.py
+import os
 import json
 import hashlib
+from pathlib import Path
 from datetime import datetime, date, timezone
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -13,23 +15,53 @@ from firebase_admin import credentials, firestore
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales DESDE SECRETS (Streamlit Cloud) =========
+# === NOMBRE Y CARPETA DEL JSON LOCAL (fallback) ===
+JSON_DIR = "Secrets"
+JSON_FILENAME = "elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json"
+JSON_CANDIDATES = [
+    Path(JSON_DIR) / JSON_FILENAME,                    # Secrets/elena-36be5-...json
+    Path(JSON_FILENAME),                               # raíz del repo
+    Path(".streamlit") / "secrets.json",               # por si lo subes así
+    Path("secrets") / JSON_FILENAME,                   # otra ruta común
+]
+
+# ========= Carga de credenciales DESDE SECRETS o JSON en /Secrets =========
 def _load_creds() -> Optional[dict]:
-    """En streamlit.app pega el JSON en Settings → Secrets bajo [firebase_service_account]."""
+    """
+    1) Intenta leer credenciales desde st.secrets["firebase_service_account"] (streamlit.app).
+    2) Si no existen, intenta leer un archivo JSON local en rutas candidatas (incluye Secrets/).
+    """
+    # 1) Secrets (recomendado en streamlit.app)
     try:
         return dict(st.secrets["firebase_service_account"])
     except Exception:
-        return None
+        pass
+
+    # 2) Fallback a archivo JSON local (e.g., Secrets/elena-36be5-firebase-adminsdk-...json)
+    for p in JSON_CANDIDATES:
+        try:
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            continue
+
+    return None
 
 @st.cache_resource(show_spinner=False)
 def init_firebase() -> Tuple[firestore.Client, dict]:
-    """Inicializa Firebase Admin con Firestore usando credenciales de st.secrets."""
+    """Inicializa Firebase Admin con Firestore usando credenciales."""
     creds = _load_creds()
     if not creds:
+        # Mensaje claro indicando ambas opciones (Secrets o archivo)
+        paths = "\n".join([f"- `{str(p)}`" for p in JSON_CANDIDATES])
         st.error(
-            "No se encontró la credencial en Secrets.\n\n"
-            "Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección "
-            "`[firebase_service_account]`."
+            "No se encontraron credenciales de Firebase.\n\n"
+            "Opciones válidas:\n"
+            "1) En **Manage app → Settings → Secrets**, pega tu JSON bajo la sección `[firebase_service_account]`.\n"
+            "2) Sube el archivo JSON con nombre **"
+            f"{JSON_FILENAME}** dentro de la carpeta **{JSON_DIR}/** del repo.\n\n"
+            "Rutas que se intentan localizar:\n" + paths
         )
         st.stop()
 
@@ -83,7 +115,7 @@ st.sidebar.markdown("### 🔧 Diagnóstico Firebase")
 st.sidebar.info(
     f"**project_id:** `{_creds.get('project_id','?')}`\n\n"
     f"**service account:** `{_creds.get('client_email','?')}`\n\n"
-    f"**origen:** `st.secrets[\"firebase_service_account\"]`"
+    f"**origen:** `st.secrets[\"firebase_service_account\"]` *o* archivo en `{JSON_DIR}/`"
 )
 
 if st.sidebar.button("Probar escritura ahora"):
@@ -215,8 +247,8 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
-    # Nota: si combinas filtros por fecha y order_by en otro campo,
-    # Firestore puede pedir un índice compuesto.
+    # Si combinas filtros por fecha y order_by en otro campo,
+    # Firestore podría pedir un índice compuesto.
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
 
     docs = list(q.stream())
