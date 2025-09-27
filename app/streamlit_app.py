@@ -1,11 +1,10 @@
-import os
 import json
-import streamlit as st
-import firebase_admin
-from firebase_admin import credentials, firestore
+from google.oauth2 import service_account
+from google.cloud import firestore
 
-# Crear el archivo credenciales.json dentro de la carpeta /app
-credenciales_dict = {
+# ============ OPCIÓN A: JSON embebido (sin comentarios) ============
+FIREBASE_JSON = r"""
+{
   "type": "service_account",
   "project_id": "elena-36be5",
   "private_key_id": "e5bac82a9d9034efeab75d1e8c550398b33f3512",
@@ -18,51 +17,44 @@ credenciales_dict = {
   "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40elena-36be5.iam.gserviceaccount.com",
   "universe_domain": "googleapis.com"
 }
+""".strip()
+# ============================================================================
 
-cred_path = os.path.join(os.path.dirname(__file__), "credenciales.json")
+creds = None
+project_id = None
 
-# Escribir el archivo solo si no existe
-if not os.path.exists(cred_path):
-    with open(cred_path, "w") as f:
-        json.dump(credenciales_dict, f)
-
-# Inicializar Firebase
 try:
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    firebase_status = "✅ Firebase inicializado correctamente."
+    sa_info = json.loads(FIREBASE_JSON)
+    creds = service_account.Credentials.from_service_account_info(sa_info)
+    project_id = sa_info["project_id"]
+    print("✅ JSON embebido válido. project_id:", project_id)
 except Exception as e:
-    firebase_status = f"❌ Error iniciando Firebase: {e}"
+    raise SystemExit(f"❌ JSON inválido. Detalle: {e}")
 
-# Interfaz Streamlit
-st.title("Registro ElenaPost")
-st.write(firebase_status)
+# Crear cliente de Firestore
+client = firestore.Client(project=project_id, credentials=creds)
+print("🔥 Firestore conectado correctamente.")
 
-folio = st.text_input("Folio")
-curp = st.text_input("CURP")
-nombre = st.text_input("Nombre completo")
-fecha_examen = st.text_input("Fecha examen")
-sede = st.text_input("Sede")
-turno = st.selectbox("Turno", ["MATUTINO", "VESPERTINO"])
-puntaje = st.text_input("Puntaje")
+# Documento de prueba
+data = {
+    "MAQUINA":    1,
+    "FECHA":      "2025-09-26",  # También puede ser datetime con timestamp
+    "NOMBRE":     "marco reyes",
+    "CORREO":     "alomarcosss@hotmail.com",
+    "TELEFONO":   "4622100885",
+    "FOLIO":      "2483",
+    "CONTACTADO": "SI",          # "SI" / "NO"
+    "POSIBLE":    ""             # "SI" / "NO" / vacío
+}
 
-if st.button("Guardar"):
-    try:
-        puntaje_float = float(puntaje)
-        doc = {
-            "folio": folio,
-            "curp": curp,
-            "nombre": nombre,
-            "fecha_examen": fecha_examen,
-            "sede": sede,
-            "turno": turno,
-            "puntaje": puntaje_float,
-        }
-        db.collection("usuarios").add(doc)
-        st.success("✅ Datos guardados en Firebase correctamente.")
-    except ValueError:
-        st.error("❌ El puntaje debe ser un número decimal válido.")
-    except Exception as e:
-        st.error(f"❌ Error guardando datos: {e}")
+# Guardar en colección 'leads'
+try:
+    doc_ref = client.collection("leads").add(data)[1]
+    print("✅ Documento guardado en 'leads' con ID:", doc_ref.id)
+
+    # Leer para comprobar
+    result = doc_ref.get().to_dict()
+    print("📄 Documento leído:", result)
+
+except Exception as e:
+    print("❌ Error guardando o leyendo en Firestore:", e)
