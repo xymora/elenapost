@@ -29,7 +29,7 @@ def init_firebase() -> Tuple[firestore.Client, dict]:
         st.error(
             "No se encontró la credencial en Secrets.\n\n"
             "Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección "
-            "`[firebase_service_account]` (ver instrucciones en el mensaje superior)."
+            "`[firebase_service_account]`."
         )
         st.stop()
 
@@ -89,11 +89,16 @@ st.sidebar.info(
 if st.sidebar.button("Probar escritura ahora"):
     try:
         ping_id = datetime.now(timezone.utc).strftime("debug_%Y%m%d_%H%M%S")
-        db.collection(LEADS_COLLECTION).document(ping_id).set({
-            "ping": True,
-            "at": utc_now_iso(),
-            "source": "streamlit_debug",
-        }, merge=True)
+        db.collection(LEADS_COLLECTION).document(ping_id).set(
+            {
+                "ping": True,
+                "at": utc_now_iso(),
+                "source": "streamlit_debug",
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
         st.sidebar.success(f"Escritura OK en `{_creds.get('project_id')}` (doc: {ping_id})")
     except Exception as e:
         st.sidebar.error(f"Fallo escribiendo: {e}")
@@ -148,7 +153,6 @@ with left:
             telefono = st.text_input("TELEFONO")
             contactado = st.radio("CONTACTADO", options=["", "SI", "NO"], horizontal=True, index=0)
         with m2:
-            # 🔧 SIN WALRUS: define la fecha por separado
             default_date = date.today()
             fecha    = st.date_input("FECHA", value=default_date)
             correo   = st.text_input("CORREO")
@@ -161,9 +165,9 @@ with left:
             st.error("El campo NOMBRE es obligatorio.")
             st.stop()
 
-        now_iso = utc_now_iso()
         payload = {
             "maquina": int(maquina),
+            # guardamos fecha en ISO (inicio del día UTC)
             "fecha": datetime(fecha.year, fecha.month, fecha.day, tzinfo=timezone.utc).isoformat(),
             "nombre": nombre.strip(),
             "correo": correo.strip(),
@@ -171,8 +175,8 @@ with left:
             "folio": str(folio).strip(),
             "contactado": norm_bool_from_si_no(contactado),
             "posible": norm_bool_from_si_no(posible),
-            "created_at": now_iso,
-            "updated_at": now_iso,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
         }
         # ID estable para evitar duplicados
         base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
@@ -211,38 +215,55 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
+    # Nota: si combinas filtros por fecha y order_by en otro campo,
+    # Firestore puede pedir un índice compuesto.
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
+
     docs = list(q.stream())
 
     rows: List[Dict[str, Any]] = []
     for d in docs:
         data = d.to_dict() or {}
 
-        # Filtros de cliente extra
-        if st.session_state.f_contactado == "(vacío)" and data.get("contactado") is not None:
+        # Acepta documentos antiguos con claves en MAYÚSCULAS
+        maquina_val = data.get("maquina", data.get("MAQUINA", ""))
+        fecha_val   = data.get("fecha",   data.get("FECHA",   ""))
+        nombre_val  = data.get("nombre",  data.get("NOMBRE",  ""))
+        correo_val  = data.get("correo",  data.get("CORREO",  ""))
+        tel_val     = data.get("telefono",data.get("TELEFONO",""))
+        folio_val   = data.get("folio",   data.get("FOLIO",   ""))
+        contactado_val = data.get("contactado", data.get("CONTACTADO", None))
+        posible_val    = data.get("posible",    data.get("POSIBLE",    None))
+
+        # Normaliza "SI/NO" string a boolean si viniera en mayúsculas
+        if isinstance(contactado_val, str): contactado_val = norm_bool_from_si_no(contactado_val)
+        if isinstance(posible_val, str):    posible_val    = norm_bool_from_si_no(posible_val)
+
+        # Filtros de cliente extra (vacíos)
+        if st.session_state.f_contactado == "(vacío)" and contactado_val is not None:
             continue
-        if st.session_state.f_posible == "(vacío)" and data.get("posible") is not None:
+        if st.session_state.f_posible == "(vacío)" and posible_val is not None:
             continue
 
         if st.session_state.f_texto.strip():
             t = st.session_state.f_texto.lower().strip()
             if not (
-                t in str(data.get("nombre","")).lower()
-                or t in str(data.get("correo","")).lower()
-                or t in str(data.get("folio","")).lower()
+                t in str(nombre_val).lower()
+                or t in str(correo_val).lower()
+                or t in str(folio_val).lower()
             ):
                 continue
 
         rows.append({
             "ID":        d.id,
-            "MAQUINA":   data.get("maquina", ""),
-            "FECHA":     data.get("fecha", ""),
-            "NOMBRE":    data.get("nombre", ""),
-            "CORREO":    data.get("correo", ""),
-            "TELEFONO":  data.get("telefono", ""),
-            "FOLIO":     data.get("folio", ""),
-            "CONTACTADO":as_si_no(data.get("contactado")),
-            "POSIBLE":   as_si_no(data.get("posible")),
+            "MAQUINA":   maquina_val,
+            "FECHA":     fecha_val,
+            "NOMBRE":    nombre_val,
+            "CORREO":    correo_val,
+            "TELEFONO":  tel_val,
+            "FOLIO":     folio_val,
+            "CONTACTADO":as_si_no(contactado_val),
+            "POSIBLE":   as_si_no(posible_val),
         })
 
     total = len(rows)
