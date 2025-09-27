@@ -13,73 +13,30 @@ from firebase_admin import credentials, firestore, storage
 
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
-BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"
 
-# ========= Carga de credenciales =========
+# ========= Carga de credenciales (SOLO ese archivo) =========
+CREDENTIALS_PATH = "secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json"
+
 def _load_creds() -> Optional[dict]:
-    """Carga credenciales en este orden:
-    1) st.secrets['firebase_service_account'] (si existe)
-    2) secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json (tu nombre específico)
-    3) secrets/firebase_service_account.json (fallback)
-    4) la primera .json que encuentre en secrets/
-    5) variables de entorno FIREBASE_CREDENTIALS_PATH o FIREBASE_CREDENTIALS_JSON
-    """
-    # 1) .streamlit/secrets.toml → [firebase_service_account]
-    try:
-        return dict(st.secrets["firebase_service_account"])
-    except Exception:
-        pass
-
-    # 2) Tu nombre específico
-    specific = os.path.join("secrets", "elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json")
-    if os.path.exists(specific):
-        with open(specific, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # 3) Nombre clásico (fallback)
-    classic = os.path.join("secrets", "firebase_service_account.json")
-    if os.path.exists(classic):
-        with open(classic, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # 4) Cualquier .json en secrets/ (último recurso)
-    if os.path.isdir("secrets"):
-        for fname in os.listdir("secrets"):
-            if fname.lower().endswith(".json"):
-                with open(os.path.join("secrets", fname), "r", encoding="utf-8") as f:
-                    return json.load(f)
-
-    # 5) Variables de entorno
-    path_env = os.getenv("FIREBASE_CREDENTIALS_PATH")
-    if path_env and os.path.exists(path_env):
-        with open(path_env, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    json_env = os.getenv("FIREBASE_CREDENTIALS_JSON")
-    if json_env:
-        try:
-            return json.loads(json_env)
-        except Exception:
-            pass
-
-    return None
+    """Lee únicamente secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json."""
+    if not os.path.exists(CREDENTIALS_PATH):
+        return None
+    with open(CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 @st.cache_resource(show_spinner=False)
-def init_firebase() -> Tuple[firestore.Client, Any]:
-    """Inicializa Firebase Admin con Firestore y Bucket."""
+def init_firebase() -> Tuple[firestore.Client, Any, dict]:
+    """Inicializa Firebase Admin con Firestore y Storage usando SOLO el archivo indicado."""
     creds = _load_creds()
     if not creds:
         st.error(
-            "Faltan credenciales de Firebase.\n\n"
-            "• Coloca el archivo JSON en `secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json`, o\n"
-            "• Usa `.streamlit/secrets.toml` con la sección `[firebase_service_account]`, o\n"
-            "• Configura `FIREBASE_CREDENTIALS_PATH` / `FIREBASE_CREDENTIALS_JSON`."
+            "No se encontró el archivo de credenciales.\n\n"
+            f"Coloca tu JSON **exactamente** en:\n\n`{CREDENTIALS_PATH}`"
         )
         st.stop()
 
-    bucket_name = (st.secrets.get(BUCKET_ENV_KEY) if hasattr(st, "secrets") else None) \
-                  or os.getenv(BUCKET_ENV_KEY) \
-                  or f"{creds['project_id']}.appspot.com"
+    # Nombre de bucket por defecto del proyecto
+    bucket_name = f"{creds['project_id']}.appspot.com"
 
     cred = credentials.Certificate(creds)
     try:
@@ -87,7 +44,7 @@ def init_firebase() -> Tuple[firestore.Client, Any]:
     except ValueError:
         app = firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
 
-    return firestore.client(app=app), storage.bucket(app=app)
+    return firestore.client(app=app), storage.bucket(app=app), creds
 
 # ========= Utils =========
 def utc_now_iso() -> str:
@@ -124,14 +81,15 @@ def _rerun():
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
 st.title("📇 Leads")
 
-db, _bucket = init_firebase()
+db, _bucket, _creds = init_firebase()
 
 # --- 🔧 Diagnóstico en sidebar ---
-creds_info = _load_creds() or {}
-proj = creds_info.get("project_id", "¿desconocido?")
-svc  = creds_info.get("client_email", "¿desconocido?")
 st.sidebar.markdown("### 🔧 Diagnóstico Firebase")
-st.sidebar.info(f"**project_id:** `{proj}`\n\n**service account:** `{svc}`")
+st.sidebar.info(
+    f"**project_id:** `{_creds.get('project_id','?')}`\n\n"
+    f"**service account:** `{_creds.get('client_email','?')}`\n\n"
+    f"**cred path:** `{CREDENTIALS_PATH}`"
+)
 
 if st.sidebar.button("Probar escritura ahora"):
     try:
@@ -141,7 +99,7 @@ if st.sidebar.button("Probar escritura ahora"):
             "at": utc_now_iso(),
             "source": "streamlit_debug",
         }, merge=True)
-        st.sidebar.success(f"Escritura OK en `{proj}` (doc: {ping_id})")
+        st.sidebar.success(f"Escritura OK en `{_creds.get('project_id')}` (doc: {ping_id})")
     except Exception as e:
         st.sidebar.error(f"Fallo escribiendo: {e}")
 
@@ -256,8 +214,9 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
-    # orden por updated_at desc para que el último guardado salga arriba
+    # Orden por updated_at desc para que el último guardado salga arriba
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
+
     docs = [d for d in q.stream()]
 
     rows: List[Dict[str, Any]] = []
