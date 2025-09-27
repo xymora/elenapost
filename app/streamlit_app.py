@@ -1,5 +1,4 @@
 # app/streamlit_app.py
-import os
 import json
 import hashlib
 from datetime import datetime, date, timezone
@@ -9,42 +8,42 @@ import streamlit as st
 
 # Firebase Admin
 import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from firebase_admin import credentials, firestore
 
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales (SOLO ese archivo) =========
-CREDENTIALS_PATH = "secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json"
-
+# ========= Carga de credenciales DESDE SECRETS (Streamlit Cloud) =========
 def _load_creds() -> Optional[dict]:
-    """Lee únicamente secrets/elena-36be5-firebase-adminsdk-fbsvc-3c1451f3d5.json."""
-    if not os.path.exists(CREDENTIALS_PATH):
+    """
+    En streamlit.app la credencial se pega en Settings → Secrets:
+    [firebase_service_account]
+    ...
+    """
+    try:
+        return dict(st.secrets["firebase_service_account"])
+    except Exception:
         return None
-    with open(CREDENTIALS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 @st.cache_resource(show_spinner=False)
-def init_firebase() -> Tuple[firestore.Client, Any, dict]:
-    """Inicializa Firebase Admin con Firestore y Storage usando SOLO el archivo indicado."""
+def init_firebase() -> Tuple[firestore.Client, dict]:
+    """Inicializa Firebase Admin con Firestore usando credenciales de st.secrets."""
     creds = _load_creds()
     if not creds:
         st.error(
-            "No se encontró el archivo de credenciales.\n\n"
-            f"Coloca tu JSON **exactamente** en:\n\n`{CREDENTIALS_PATH}`"
+            "No se encontró la credencial en Secrets.\n\n"
+            "Ve a **Manage app → Settings → Secrets** y pega tu JSON bajo la sección "
+            "`[firebase_service_account]` (ver instrucciones en el mensaje superior)."
         )
         st.stop()
-
-    # Nombre de bucket por defecto del proyecto
-    bucket_name = f"{creds['project_id']}.appspot.com"
 
     cred = credentials.Certificate(creds)
     try:
         app = firebase_admin.get_app()
     except ValueError:
-        app = firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
+        app = firebase_admin.initialize_app(cred)
 
-    return firestore.client(app=app), storage.bucket(app=app), creds
+    return firestore.client(app=app), creds
 
 # ========= Utils =========
 def utc_now_iso() -> str:
@@ -81,14 +80,14 @@ def _rerun():
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
 st.title("📇 Leads")
 
-db, _bucket, _creds = init_firebase()
+db, _creds = init_firebase()
 
 # --- 🔧 Diagnóstico en sidebar ---
 st.sidebar.markdown("### 🔧 Diagnóstico Firebase")
 st.sidebar.info(
     f"**project_id:** `{_creds.get('project_id','?')}`\n\n"
     f"**service account:** `{_creds.get('client_email','?')}`\n\n"
-    f"**cred path:** `{CREDENTIALS_PATH}`"
+    f"**origen:** `st.secrets[\"firebase_service_account\"]`"
 )
 
 if st.sidebar.button("Probar escritura ahora"):
@@ -153,7 +152,7 @@ with left:
             telefono = st.text_input("TELEFONO")
             contactado = st.radio("CONTACTADO", options=["", "SI", "NO"], horizontal=True, index=0)
         with m2:
-            fecha    = st.date_input("FECHA", value=date.today())
+            fecha    = st.date_input("FECHA", value=date_today := date.today())
             correo   = st.text_input("CORREO")
             folio    = st.text_input("FOLIO")
             posible  = st.radio("POSIBLE", options=["", "SI", "NO"], horizontal=True, index=0)
@@ -177,7 +176,7 @@ with left:
             "created_at": now_iso,
             "updated_at": now_iso,
         }
-        # ID estable: evita duplicados si repiten nombre|folio|telefono
+        # ID estable para evitar duplicados
         base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
         lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
 
@@ -214,10 +213,8 @@ with right:
     q = where_bool(st.session_state.f_contactado, "contactado", q)
     q = where_bool(st.session_state.f_posible,    "posible",    q)
 
-    # Orden por updated_at desc para que el último guardado salga arriba
     q = q.order_by("updated_at", direction=firestore.Query.DESCENDING).limit(st.session_state.f_limite)
-
-    docs = [d for d in q.stream()]
+    docs = list(q.stream())
 
     rows: List[Dict[str, Any]] = []
     for d in docs:
@@ -261,7 +258,6 @@ with right:
     else:
         import pandas as pd
         df = pd.DataFrame(rows)
-        # mover el último guardado (si existe) a la primera fila
         if st.session_state.just_saved_id:
             df["__is_last__"] = (df["ID"] == st.session_state.just_saved_id)
             df = pd.concat([df[df["__is_last__"]], df[~df["__is_last__"]]]).drop(columns="__is_last__")
