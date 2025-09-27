@@ -1,5 +1,4 @@
 # app/streamlit_app.py
-import json
 import hashlib
 from datetime import datetime, date, timezone
 from typing import Optional, Tuple, List, Dict, Any
@@ -9,7 +8,7 @@ import streamlit as st
 
 # TOML reader (py3.11+: tomllib; fallback: tomli)
 try:
-    import tomllib  # type: ignore[attr-defined]
+    import tomllib  # Python 3.11+
 except Exception:  # py<3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
@@ -20,8 +19,15 @@ from firebase_admin import credentials, firestore
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 
-# ========= Carga de credenciales (Secrets o .streamlit/secrets.toml) =========
-TOML_PATH = Path(".streamlit/secrets.toml")  # <-- archivo local en el repo
+# ========= Carga de credenciales (st.secrets o .streamlit/secrets.toml) =========
+TOML_PATH = Path(".streamlit/secrets.toml")
+
+def _normalize_private_key(creds: dict) -> dict:
+    """Convierte '\\n' a saltos reales si fuese necesario."""
+    pk = creds.get("private_key")
+    if isinstance(pk, str) and "\\n" in pk:
+        creds = {**creds, "private_key": pk.replace("\\n", "\n")}
+    return creds
 
 def _load_creds() -> Tuple[Optional[dict], str]:
     """
@@ -32,7 +38,7 @@ def _load_creds() -> Tuple[Optional[dict], str]:
     # 1) Secrets de Streamlit (UI de streamlit.app)
     try:
         creds = dict(st.secrets["firebase"])
-        return creds, "st.secrets[firebase]"
+        return _normalize_private_key(creds), "st.secrets[firebase]"
     except Exception:
         pass
 
@@ -43,7 +49,7 @@ def _load_creds() -> Tuple[Optional[dict], str]:
                 data = tomllib.load(f)
             creds = data.get("firebase")
             if isinstance(creds, dict) and "private_key" in creds:
-                return creds, TOML_PATH.as_posix()
+                return _normalize_private_key(creds), TOML_PATH.as_posix()
         except Exception as e:
             st.error(f"Error leyendo {TOML_PATH}: {e}")
 
