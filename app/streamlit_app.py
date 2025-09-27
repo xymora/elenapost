@@ -12,13 +12,12 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage
 from google.cloud.storage.bucket import Bucket  # solo para type hints
 
-
 APP_TITLE = "Elenapost • Leads"
 LEADS_COLLECTION = "leads"
 BUCKET_ENV_KEY = "FIREBASE_STORAGE_BUCKET"   # opcional si usaras Storage
 
 
-# ================= Credenciales / Firebase =================
+# ========= Credenciales / Firebase =========
 def _load_creds() -> Optional[dict]:
     # 1) st.secrets["firebase_service_account"]
     try:
@@ -57,7 +56,7 @@ def init_firebase() -> Tuple[firestore.Client, Bucket]:
     return firestore.client(app=app), storage.bucket(app=app)
 
 
-# ================= Utilidades =================
+# ========= Utilidades =========
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -89,20 +88,19 @@ def _rerun():
     except Exception: st.experimental_rerun()
 
 
-# ================= UI (filtros izquierda, "Últimos registros" arriba, formulario abajo) =================
+# ========= UI (filtros + nuevo a la izquierda | registros a la derecha) =========
 st.set_page_config(page_title=APP_TITLE, page_icon="📇", layout="wide")
 st.title("📇 Leads")
 
 db, _bucket = init_firebase()
 
-# Layout: izquierda filtros, derecha contenido (últimos registros arriba, registro abajo)
 left, right = st.columns([1, 2.3], gap="large")
 
-# --------- IZQUIERDA: Filtros ---------
+# --------- IZQUIERDA: Filtros + Nuevo lead ---------
 with left:
-    st.markdown("### 🧭 Filtros")
+    st.markdown("### Filtros personalizados")
 
-    filtro_texto = st.text_input("Buscar por NOMBRE / CORREO / FOLIO")
+    filtro_texto   = st.text_input("Buscar por NOMBRE / CORREO / FOLIO")
     filtro_maquina = st.text_input("Máquina (igual a)", placeholder="ej. 1")
 
     c_fecha1, c_fecha2 = st.columns(2)
@@ -120,12 +118,55 @@ with left:
     limite = st.slider("Límite", 10, 1000, 100, 10)
     st.caption("Los filtros se aplican automáticamente.")
 
-# --------- DERECHA: "Últimos registros" (arriba) + Formulario (abajo) ---------
+    st.markdown("---")
+    st.markdown("### Nuevo lead")
+
+    # Formulario en la barra izquierda (como en Movies Dashboard)
+    with st.form("lead_form_left", clear_on_submit=True):
+        m1, m2 = st.columns(2)
+        with m1:
+            maquina  = st.number_input("MAQUINA", min_value=0, step=1, value=1)
+            nombre   = st.text_input("NOMBRE")
+            telefono = st.text_input("TELEFONO")
+            contactado = st.radio("CONTACTADO", options=["", "SI", "NO"], horizontal=True, index=0)
+        with m2:
+            fecha    = st.date_input("FECHA", value=date.today())
+            correo   = st.text_input("CORREO")
+            folio    = st.text_input("FOLIO")
+            posible  = st.radio("POSIBLE", options=["", "SI", "NO"], horizontal=True, index=0)
+
+        guardar = st.form_submit_button("Guardar lead", use_container_width=True)
+
+    if guardar:
+        if not nombre.strip():
+            st.error("El campo NOMBRE es obligatorio.")
+            st.stop()
+
+        payload = {
+            "maquina": int(maquina),
+            "fecha": datetime(fecha.year, fecha.month, fecha.day, tzinfo=timezone.utc).isoformat(),
+            "nombre": nombre.strip(),
+            "correo": correo.strip(),
+            "telefono": norm_phone(telefono),
+            "folio": str(folio).strip(),
+            "contactado": norm_bool_from_si_no(contactado),
+            "posible": norm_bool_from_si_no(posible),
+            "created_at": utc_now_iso(),
+            "updated_at": utc_now_iso(),
+        }
+        # ID estable por nombre+folio+telefono para evitar duplicados accidentales
+        base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
+        lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
+
+        db.collection(LEADS_COLLECTION).document(lead_id).set(payload, merge=True)
+        st.success("Lead guardado.")
+        _rerun()
+
+# --------- DERECHA: Últimos registros (afectados por los filtros) ---------
 with right:
-    # =================== ÚLTIMOS REGISTROS (ARRIBA) ===================
     st.markdown("### Últimos registros")
 
-    # Query con filtros en servidor cuando se puede
+    # Construir query aplicando lo que se pueda en servidor
     q = db.collection(LEADS_COLLECTION)
 
     if filtro_maquina.strip().isdigit():
@@ -145,8 +186,8 @@ with right:
     q = where_bool(filtro_posible,    "posible",    q)
 
     q = q.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limite)
-
     docs = [d for d in q.stream()]
+
     rows: List[Dict[str, Any]] = []
     for d in docs:
         data = d.to_dict() or {}
@@ -178,7 +219,7 @@ with right:
         })
 
     total = len(rows)
-    st.caption(f"🔢 Total encontradas: **{total}**")
+    st.caption(f"Total encontradas: {total}")
 
     if total == 0:
         st.info("No hay registros para los filtros seleccionados.")
@@ -188,53 +229,9 @@ with right:
         st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.download_button(
-            "⬇️ Exportar CSV",
+            "Exportar CSV",
             data=to_csv(rows),
             file_name="leads_filtrados.csv",
             mime="text/csv",
             use_container_width=True
         )
-
-    # =================== FORMULARIO (ABAJO) ===================
-    st.markdown("---")
-    st.markdown("### Registrar nuevo lead")
-
-    with st.form("lead_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            maquina  = st.number_input("MAQUINA", min_value=0, step=1, value=1)
-            nombre   = st.text_input("NOMBRE")
-            telefono = st.text_input("TELEFONO")
-            contactado = st.radio("CONTACTADO", options=["", "SI", "NO"], horizontal=True, index=0)
-        with c2:
-            fecha    = st.date_input("FECHA", value=date.today())
-            correo   = st.text_input("CORREO")
-            folio    = st.text_input("FOLIO")
-            posible  = st.radio("POSIBLE", options=["", "SI", "NO"], horizontal=True, index=0)
-
-        guardar = st.form_submit_button("💾 Guardar lead", use_container_width=True)
-
-    if guardar:
-        if not nombre.strip():
-            st.error("El campo **NOMBRE** es obligatorio.")
-            st.stop()
-
-        payload = {
-            "maquina": int(maquina),
-            "fecha": datetime(fecha.year, fecha.month, fecha.day, tzinfo=timezone.utc).isoformat(),
-            "nombre": nombre.strip(),
-            "correo": correo.strip(),
-            "telefono": norm_phone(telefono),
-            "folio": str(folio).strip(),
-            "contactado": norm_bool_from_si_no(contactado),
-            "posible": norm_bool_from_si_no(posible),
-            "created_at": utc_now_iso(),
-            "updated_at": utc_now_iso(),
-        }
-        # ID estable por nombre+folio+telefono para evitar duplicados accidentales
-        base = f"{payload['nombre']}|{payload['folio']}|{payload['telefono']}"
-        lead_id = hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
-
-        db.collection(LEADS_COLLECTION).document(lead_id).set(payload, merge=True)
-        st.success("✅ Lead guardado.")
-        _rerun()
