@@ -15,11 +15,7 @@ LEADS_COLLECTION = "leads"
 
 # ========= Carga de credenciales DESDE SECRETS (Streamlit Cloud) =========
 def _load_creds() -> Optional[dict]:
-    """
-    En streamlit.app la credencial se pega en Settings → Secrets:
-    [firebase_service_account]
-    ...
-    """
+    """En streamlit.app pega el JSON en Settings → Secrets bajo [firebase_service_account]."""
     try:
         return dict(st.secrets["firebase_service_account"])
     except Exception:
@@ -152,7 +148,9 @@ with left:
             telefono = st.text_input("TELEFONO")
             contactado = st.radio("CONTACTADO", options=["", "SI", "NO"], horizontal=True, index=0)
         with m2:
-            fecha    = st.date_input("FECHA", value=date_today := date.today())
+            # 🔧 SIN WALRUS: define la fecha por separado
+            default_date = date.today()
+            fecha    = st.date_input("FECHA", value=default_date)
             correo   = st.text_input("CORREO")
             folio    = st.text_input("FOLIO")
             posible  = st.radio("POSIBLE", options=["", "SI", "NO"], horizontal=True, index=0)
