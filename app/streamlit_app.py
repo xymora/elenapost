@@ -20,9 +20,9 @@ def guardar_datos(db, datos):
     try:
         doc_ref = db.collection("registros_enarm").document(datos["folio"])
         doc_ref.set(datos)
-        return True, "Datos guardados correctamente ✅"
+        return True, "✅ Datos guardados correctamente."
     except Exception as e:
-        return False, f"Error al guardar datos: {e}"
+        return False, f"❌ Error al guardar datos: {e}"
 
 # ---------------------------
 # Interfaz gráfica Streamlit
@@ -40,34 +40,32 @@ def main():
         fecha_examen = st.text_input("📅 Fecha del examen")
         sede = st.text_input("📍 Sede")
         turno = st.selectbox("🕐 Turno", ["MATUTINO", "VESPERTINO"])
-        puntaje = st.text_input("📊 Puntaje")
+        
+        puntaje = st.number_input("📊 Puntaje", min_value=0.0, max_value=100.0, step=0.0001, format="%.4f")
 
         submit_btn = st.form_submit_button("Registrar")
 
     if submit_btn:
-        campos = [folio, curp, nombre, fecha_examen, sede, turno, puntaje]
+        campos = [folio, curp, nombre, fecha_examen, sede, turno]
         if any(c.strip() == "" for c in campos):
             st.warning("⚠️ Todos los campos son obligatorios.")
         else:
-            try:
-                puntaje_float = round(float(puntaje), 4)
-                datos = {
-                    "folio": folio,
-                    "curp": curp,
-                    "nombre": nombre,
-                    "fecha_examen": fecha_examen,
-                    "sede": sede,
-                    "turno": turno,
-                    "puntaje": puntaje_float
-                }
-                db = iniciar_firebase()
-                exito, mensaje = guardar_datos(db, datos)
-                if exito:
-                    st.success(mensaje)
-                else:
-                    st.error(mensaje)
-            except ValueError:
-                st.error("❌ El puntaje debe ser un número decimal válido.")
+            puntaje_float = round(puntaje, 4)
+            datos = {
+                "folio": folio,
+                "curp": curp,
+                "nombre": nombre,
+                "fecha_examen": fecha_examen,
+                "sede": sede,
+                "turno": turno,
+                "puntaje": puntaje_float
+            }
+            db = iniciar_firebase()
+            exito, mensaje = guardar_datos(db, datos)
+            if exito:
+                st.success(mensaje)
+            else:
+                st.error(mensaje)
 
 if __name__ == "__main__":
     main()
